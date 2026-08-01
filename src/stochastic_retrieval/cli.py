@@ -8,6 +8,8 @@ from typing import Annotated
 import typer
 
 from stochastic_retrieval.config import load_config, load_sweep
+from stochastic_retrieval.distribution import analyze_saved_run
+from stochastic_retrieval.noise_controls import analyze_saved_noise_oracles
 from stochastic_retrieval.pipeline import run_experiment
 
 app = typer.Typer(
@@ -90,6 +92,40 @@ def sweep(
             typer.echo(f"- {name}: {error}", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"\nCompleted all {len(configs)} sweep runs.")
+
+
+@app.command("analyze-run")
+def analyze_run(
+    run_dir: Annotated[
+        Path,
+        typer.Argument(exists=True, file_okay=False, readable=True),
+    ],
+    sample_count: Annotated[
+        int | None,
+        typer.Option("--sample-count", min=1),
+    ] = None,
+) -> None:
+    """Analyze saved stochastic embeddings and rankings without inference."""
+    selected = (sample_count,) if sample_count is not None else None
+    outputs = analyze_saved_run(run_dir, selected)
+    typer.echo(f"Wrote {len(outputs)} distribution artifacts to {run_dir / 'analyses'}")
+
+
+@app.command("noise-oracles")
+def noise_oracles(
+    run_dir: Annotated[
+        Path,
+        typer.Argument(exists=True, file_okay=False, readable=True),
+    ],
+    sample_count: Annotated[
+        int | None,
+        typer.Option("--sample-count", min=1),
+    ] = None,
+) -> None:
+    """Compare dropout oracle with magnitude-matched artificial noise."""
+    selected = (sample_count,) if sample_count is not None else None
+    outputs = analyze_saved_noise_oracles(run_dir, selected)
+    typer.echo(f"Wrote {len(outputs)} matched-noise artifacts to {run_dir}")
 
 
 if __name__ == "__main__":

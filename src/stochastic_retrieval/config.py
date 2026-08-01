@@ -37,6 +37,8 @@ class ExperimentConfig:
     name: str
     seed: int = 42
     query_samples: int = 8
+    sample_counts: tuple[int, ...] = ()
+    independent_sample_banks: bool = False
     document_samples: int = 1
     retrieval_k: int = 1000
     retrieval_backend: str = "auto"
@@ -63,6 +65,10 @@ class ExperimentConfig:
         "oracle_best_of_n",
     )
     bootstrap_replicates: int = 2000
+
+    @property
+    def resolved_sample_counts(self) -> tuple[int, ...]:
+        return self.sample_counts or (self.query_samples,)
 
 
 @dataclass(frozen=True)
@@ -115,7 +121,7 @@ def load_config(path: str | Path) -> ProjectConfig:
     model = ModelConfig(**_resolve_section(raw, "model", config_path))
     dataset = DatasetConfig(**_resolve_section(raw, "dataset", config_path))
     experiment_raw = _require_mapping(raw.get("experiment"), "experiment")
-    for key in ("metric_cutoffs", "success_cutoffs", "methods"):
+    for key in ("sample_counts", "metric_cutoffs", "success_cutoffs", "methods"):
         if key in experiment_raw:
             experiment_raw[key] = tuple(experiment_raw[key])
     experiment = ExperimentConfig(**experiment_raw)
@@ -151,7 +157,7 @@ def load_sweep(path: str | Path) -> list[ProjectConfig]:
 
     experiment_template = _require_mapping(raw.get("experiment"), "experiment").copy()
     experiment_template.pop("name", None)
-    for key in ("metric_cutoffs", "success_cutoffs", "methods"):
+    for key in ("sample_counts", "metric_cutoffs", "success_cutoffs", "methods"):
         if key in experiment_template:
             experiment_template[key] = tuple(experiment_template[key])
 

@@ -342,7 +342,12 @@ class SentenceEmbeddingEncoder:
         )
         chunks = [
             self._encode_texts(
-                [f"{prefix}{record.text}" for record in records[start : start + self.config.batch_size]]
+                [
+                    f"{prefix}{record.text}"
+                    for record in records[
+                        start : start + self.config.batch_size
+                    ]
+                ]
             )
             for start in range(0, len(records), self.config.batch_size)
         ]

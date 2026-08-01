@@ -173,6 +173,102 @@ def mean_embedding(samples: np.ndarray) -> np.ndarray:
     return l2_normalize(samples.mean(axis=0))
 
 
+def anchored_centroid(
+    deterministic: np.ndarray,
+    samples: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    """Shrink the stochastic centroid toward the deterministic embedding."""
+    if not 0 <= alpha <= 1:
+        raise ValueError("anchor alpha must be in [0, 1]")
+    deterministic_normalized = l2_normalize(deterministic)
+    stochastic_centroid = mean_embedding(samples)
+    return l2_normalize(
+        (1.0 - alpha) * deterministic_normalized + alpha * stochastic_centroid
+    )
+
+
+def gated_ranking(
+    deterministic: Rankings,
+    alternative: Rankings,
+    use_alternative: np.ndarray,
+) -> Rankings:
+    """Select one complete ranking per query using a label-free boolean gate."""
+    mask = np.asarray(use_alternative, dtype=bool)
+    if mask.shape != (len(deterministic.indices),):
+        raise ValueError("Ranking gate must contain one boolean per query")
+    indices = deterministic.indices.copy()
+    scores = deterministic.scores.copy()
+    indices[mask] = alternative.indices[mask]
+    scores[mask] = alternative.scores[mask]
+    return Rankings(indices, scores)
+
+
+def deterministic_score_margin(rankings: Rankings, rank: int) -> np.ndarray:
+    """Score difference between documents at `rank` and `rank + 1`."""
+    if rank < 1 or rankings.scores.shape[1] <= rank:
+        raise ValueError("Score margin rank must have a following document")
+    return rankings.scores[:, rank - 1] - rankings.scores[:, rank]
+
+
+def ranking_disagreement(
+    rankings: list[Rankings],
+    depth: int = 10,
+) -> np.ndarray:
+    """Mean pairwise Jaccard distance among sampled top-k sets per query."""
+    if not rankings:
+        raise ValueError("At least one ranking is required")
+    if depth < 1:
+        raise ValueError("disagreement depth must be positive")
+    query_count = rankings[0].indices.shape[0]
+    if len(rankings) == 1:
+        return np.zeros(query_count, dtype=np.float32)
+    result = np.zeros(query_count, dtype=np.float32)
+    pairs = 0
+    for left in range(len(rankings)):
+        for right in range(left + 1, len(rankings)):
+            for query_index in range(query_count):
+                left_set = set(
+                    int(index)
+                    for index in rankings[left].indices[query_index, :depth]
+                    if index >= 0
+                )
+                right_set = set(
+                    int(index)
+                    for index in rankings[right].indices[query_index, :depth]
+                    if index >= 0
+                )
+                union = left_set | right_set
+                similarity = (
+                    len(left_set & right_set) / len(union) if union else 1.0
+                )
+                result[query_index] += 1.0 - similarity
+            pairs += 1
+    return result / pairs
+
+
+def quartile_gate_masks(
+    deterministic_margins: np.ndarray,
+    disagreement: np.ndarray,
+    sample_count: int,
+) -> tuple[np.ndarray, float, np.ndarray, float]:
+    """Return pre-specified bottom-margin and top-disagreement quartile gates."""
+    margin_threshold = float(np.nanquantile(deterministic_margins, 0.25))
+    margin_mask = deterministic_margins <= margin_threshold
+    disagreement_threshold = float(np.quantile(disagreement, 0.75))
+    disagreement_mask = (
+        disagreement >= disagreement_threshold
+        if sample_count > 1
+        else np.zeros(len(disagreement), dtype=bool)
+    )
+    return (
+        margin_mask,
+        margin_threshold,
+        disagreement_mask,
+        disagreement_threshold,
+    )
+
+
 def medoid_embedding(samples: np.ndarray) -> np.ndarray:
     """Choose the sample with highest average cosine agreement for every query."""
     normalized = l2_normalize(samples)

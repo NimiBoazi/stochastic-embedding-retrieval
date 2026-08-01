@@ -104,8 +104,24 @@ stochastic-retrieval sweep configs/sweeps/dropout_ablations_scifact.yaml
 ```
 
 It crosses four base models with native all/attention/hidden scopes and all-scope
-probabilities 0.05, 0.10, and 0.20. These are development analyses; any selected
-condition must be frozen before confirmatory evaluation.
+probabilities 0.05, 0.10, and 0.20. Every configured combination is executed and
+reported independently; sweep results do not select one condition or suppress
+the remaining runs.
+
+The BGE-base NFCorpus six-condition sweep follows the same run-all policy:
+
+```bash
+stochastic-retrieval sweep \
+  configs/sweeps/bge_nfcorpus_dropout_development.yaml --execute
+```
+
+The matched E5-base-v2 model-replication sweep uses the identical NFCorpus
+protocol:
+
+```bash
+stochastic-retrieval sweep \
+  configs/sweeps/e5_nfcorpus_dropout_development.yaml --execute
+```
 
 Real-checkpoint contract tests are opt-in because they download all five models:
 
@@ -130,12 +146,17 @@ artifacts/runs/<experiment-name>-<fingerprint>/
 │   ├── per_query.parquet
 │   ├── summary.parquet
 │   ├── summary_by_relevance_group.parquet
-│   └── paired_bootstrap.parquet
+│   ├── paired_bootstrap.parquet
+│   ├── noise_oracle_per_query.parquet
+│   ├── noise_oracle_summary.parquet
+│   └── noise_oracle_bootstrap.parquet
 ├── analyses/
 │   ├── embedding_diversity.parquet
 │   ├── dataset_query_diagnostics.parquet
 │   ├── trimmed_centroid_samples.parquet
-│   └── oracle_selections.parquet
+│   ├── oracle_selections.parquet
+│   ├── noise_oracle_selections.parquet
+│   └── noise_control_diagnostics.parquet
 ├── events.jsonl
 ├── qrels.json
 └── manifest.json
@@ -143,6 +164,12 @@ artifacts/runs/<experiment-name>-<fingerprint>/
 
 Artifacts are excluded from Git. Copy completed runs to versioned GCS or Azure
 Blob storage for long-term retention.
+
+Matched-noise controls can also be added to an existing run without inference:
+
+```bash
+stochastic-retrieval noise-oracles artifacts/runs/<run-id> --sample-count 16
+```
 
 ## Runtime reporting and safeguards
 

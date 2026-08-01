@@ -34,6 +34,37 @@ def test_config_supports_referenced_model_and_dataset(tmp_path) -> None:
     assert config.experiment.name == "example-run"
 
 
+def test_config_parses_independent_sample_counts(tmp_path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "model: {name: example/model}",
+                "dataset: {name: example, ir_dataset_id: example/test}",
+                "experiment:",
+                "  name: multi-n",
+                "  query_samples: 128",
+                "  sample_counts: [1, 2, 4, 8, 16, 32, 64, 128]",
+                "  independent_sample_banks: true",
+            ]
+        )
+    )
+
+    config = load_config(config_path)
+
+    assert config.experiment.resolved_sample_counts == (
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+    )
+    assert config.experiment.independent_sample_banks is True
+
+
 def test_sweep_expands_model_dataset_cartesian_product(tmp_path) -> None:
     (tmp_path / "model.yaml").write_text("name: example/model\n")
     (tmp_path / "first.yaml").write_text(

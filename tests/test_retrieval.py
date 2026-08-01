@@ -3,10 +3,15 @@ import numpy as np
 from stochastic_retrieval.retrieval import (
     DenseRetriever,
     Rankings,
+    anchored_centroid,
+    deterministic_score_margin,
     exact_search,
+    gated_ranking,
     majority_vote,
     maximum_score_rerank,
     mean_embedding,
+    quartile_gate_masks,
+    ranking_disagreement,
     ranking_medoid,
     reciprocal_rank_fusion,
     trimmed_centroid,
@@ -51,6 +56,71 @@ def test_mean_score_and_normalized_mean_have_same_ranking() -> None:
     normalized = exact_search(mean_embedding(samples), corpus, k=3)
 
     np.testing.assert_array_equal(raw.indices, normalized.indices)
+
+
+def test_anchored_centroid_interpolates_and_validates_alpha() -> None:
+    deterministic = np.array([[1.0, 0.0]], dtype=np.float32)
+    samples = np.array([[[0.0, 1.0]], [[0.0, 1.0]]], dtype=np.float32)
+
+    np.testing.assert_allclose(
+        anchored_centroid(deterministic, samples, 0.0),
+        deterministic,
+    )
+    np.testing.assert_allclose(
+        anchored_centroid(deterministic, samples, 1.0),
+        [[0.0, 1.0]],
+    )
+    middle = anchored_centroid(deterministic, samples, 0.5)
+    np.testing.assert_allclose(middle, [[2**-0.5, 2**-0.5]], atol=1e-6)
+
+
+def test_gated_ranking_and_label_free_diagnostics() -> None:
+    deterministic = Rankings(
+        np.array([[0, 1], [1, 0]]),
+        np.array([[1.0, 0.9], [0.8, 0.5]], dtype=np.float32),
+    )
+    alternative = Rankings(
+        np.array([[1, 0], [0, 1]]),
+        np.array([[0.7, 0.6], [0.9, 0.4]], dtype=np.float32),
+    )
+
+    gated = gated_ranking(deterministic, alternative, np.array([False, True]))
+
+    np.testing.assert_array_equal(gated.indices, [[0, 1], [0, 1]])
+    np.testing.assert_allclose(
+        deterministic_score_margin(deterministic, 1),
+        [0.1, 0.3],
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        ranking_disagreement([deterministic], depth=2),
+        [0.0, 0.0],
+    )
+    np.testing.assert_allclose(
+        ranking_disagreement([deterministic, alternative], depth=1),
+        [1.0, 1.0],
+    )
+
+
+def test_quartile_gate_masks_and_n1_disagreement_fallback() -> None:
+    margins = np.array([1.0, 2.0, 3.0, 4.0])
+    disagreement = np.array([0.1, 0.2, 0.3, 0.4])
+
+    margin_mask, margin_threshold, disagreement_mask, threshold = (
+        quartile_gate_masks(margins, disagreement, sample_count=4)
+    )
+
+    np.testing.assert_array_equal(margin_mask, [True, False, False, False])
+    np.testing.assert_array_equal(disagreement_mask, [False, False, False, True])
+    assert margin_threshold == 1.75
+    assert threshold == 0.325
+
+    _, _, n1_mask, _ = quartile_gate_masks(
+        margins,
+        disagreement,
+        sample_count=1,
+    )
+    assert not n1_mask.any()
 
 
 def test_rank_fusion_prefers_repeated_documents() -> None:

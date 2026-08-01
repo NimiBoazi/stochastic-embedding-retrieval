@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from stochastic_retrieval.evaluation import (
@@ -8,7 +9,10 @@ from stochastic_retrieval.evaluation import (
     evaluate_rankings,
     ndcg,
     oracle_best_of_n,
+    paired_bootstrap_comparisons,
+    ranking_frame,
     reciprocal_rank,
+    summarize,
 )
 from stochastic_retrieval.retrieval import Rankings
 
@@ -45,6 +49,27 @@ def test_oracle_selects_best_sample_per_query() -> None:
 
     np.testing.assert_array_equal(oracle.indices[:, 0], [0, 1])
     np.testing.assert_array_equal(selections["selected_sample"], [0, 1])
+    assert set(selections["candidate_source"]) == {"stochastic_only"}
+
+
+def test_oracle_cannot_fall_back_to_a_better_deterministic_ranking() -> None:
+    stochastic = Rankings(
+        indices=np.array([[1, 0]]),
+        scores=np.array([[1.0, 0.5]], dtype=np.float32),
+    )
+    # A deterministic ranking would put relevant d1 first, but it is deliberately
+    # not an oracle candidate.
+    oracle, selections = oracle_best_of_n(
+        [stochastic],
+        ["q1"],
+        ["d1", "d2"],
+        {"q1": {"d1": 1}},
+        selection_cutoff=1,
+    )
+
+    assert oracle.indices[0, 0] == 1
+    assert selections.loc[0, "selection_ndcg@1"] == 0.0
+    assert selections.loc[0, "candidate_source"] == "stochastic_only"
 
 
 def test_evaluate_rankings_matches_trec_eval_semantics() -> None:
@@ -126,3 +151,54 @@ def test_evaluate_rankings_keeps_queries_without_judgments() -> None:
     assert result.loc[1, "ndcg@1"] == 0.0
     assert result.loc[1, "relevance_group"] == "none"
     assert diagnostics.loc[1, "relevant_documents"] == 0
+
+
+def test_multi_n_summaries_and_bootstrap_never_mix_sample_counts() -> None:
+    rows = []
+    for sample_count, candidate_values in ((1, [1.0, 1.0]), (2, [0.0, 0.0])):
+        for query_id, baseline, candidate in zip(
+            ("q1", "q2"), (0.5, 0.5), candidate_values, strict=True
+        ):
+            rows.extend(
+                [
+                    {
+                        "method": "deterministic",
+                        "sample_count": sample_count,
+                        "query_id": query_id,
+                        "ndcg@10": baseline,
+                    },
+                    {
+                        "method": "candidate",
+                        "sample_count": sample_count,
+                        "query_id": query_id,
+                        "ndcg@10": candidate,
+                    },
+                ]
+            )
+    per_query = pd.DataFrame(rows)
+
+    summary = summarize(per_query)
+    comparisons = paired_bootstrap_comparisons(
+        per_query,
+        baseline="deterministic",
+        metric="ndcg@10",
+        replicates=100,
+        seed=42,
+    )
+
+    assert set(summary["sample_count"]) == {1, 2}
+    deltas = comparisons.set_index("sample_count")["mean_delta"]
+    assert deltas.loc[1] == 0.5
+    assert deltas.loc[2] == -0.5
+
+
+def test_ranking_frame_records_sample_count() -> None:
+    frame = ranking_frame(
+        "method",
+        Rankings(np.array([[0]]), np.array([[1.0]], dtype=np.float32)),
+        ["q1"],
+        ["d1"],
+        sample_count=8,
+    )
+
+    assert frame.loc[0, "sample_count"] == 8

@@ -15,6 +15,7 @@ def ranking_frame(
     rankings: Rankings,
     query_ids: list[str],
     document_ids: list[str],
+    sample_count: int | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for query_index, query_id in enumerate(query_ids):
@@ -28,15 +29,16 @@ def ranking_frame(
         ):
             if document_index < 0:
                 continue
-            rows.append(
-                {
-                    "method": method,
-                    "query_id": query_id,
-                    "doc_id": document_ids[int(document_index)],
-                    "rank": rank,
-                    "score": float(score),
-                }
-            )
+            row: dict[str, object] = {
+                "method": method,
+                "query_id": query_id,
+                "doc_id": document_ids[int(document_index)],
+                "rank": rank,
+                "score": float(score),
+            }
+            if sample_count is not None:
+                row["sample_count"] = sample_count
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -46,6 +48,7 @@ def iter_ranking_frames(
     query_ids: list[str],
     document_ids: list[str],
     query_batch_size: int = 256,
+    sample_count: int | None = None,
 ) -> Iterator[pd.DataFrame]:
     for start in range(0, len(query_ids), query_batch_size):
         stop = min(start + query_batch_size, len(query_ids))
@@ -57,6 +60,7 @@ def iter_ranking_frames(
             ),
             query_ids[start:stop],
             document_ids,
+            sample_count=sample_count,
         )
 
 
@@ -188,6 +192,7 @@ def oracle_best_of_n(
     document_ids: list[str],
     qrels: dict[str, dict[str, int]],
     selection_cutoff: int = 10,
+    candidate_source: str = "stochastic_only",
 ) -> tuple[Rankings, pd.DataFrame]:
     """Select the highest-nDCG sample per query; this intentionally uses labels."""
     if not rankings:
@@ -213,6 +218,7 @@ def oracle_best_of_n(
             {
                 "query_id": query_id,
                 "selected_sample": selected,
+                "candidate_source": candidate_source,
                 f"selection_ndcg@{selection_cutoff}": utilities[selected],
             }
         )
@@ -220,22 +226,27 @@ def oracle_best_of_n(
 
 
 def summarize(per_query: pd.DataFrame) -> pd.DataFrame:
+    group_columns = ["method"]
+    if "sample_count" in per_query.columns:
+        group_columns.append("sample_count")
     metric_columns = list(
-        per_query.drop(columns=["method", "query_id"]).select_dtypes(include="number")
+        per_query.drop(
+            columns=["method", "query_id", "sample_count"], errors="ignore"
+        ).select_dtypes(include="number")
     )
-    return (
-        per_query.groupby("method", sort=False)[metric_columns]
-        .mean()
-        .reset_index()
-    )
+    return per_query.groupby(group_columns, sort=False)[metric_columns].mean().reset_index()
 
 
 def summarize_by_relevance_group(per_query: pd.DataFrame) -> pd.DataFrame:
     metric_columns = [column for column in per_query.columns if "@" in column]
-    grouped = per_query.groupby(["method", "relevance_group"], sort=False)
+    group_columns = ["method"]
+    if "sample_count" in per_query.columns:
+        group_columns.append("sample_count")
+    group_columns.append("relevance_group")
+    grouped = per_query.groupby(group_columns, sort=False)
     result = grouped[metric_columns].mean().reset_index()
     result.insert(
-        2,
+        len(group_columns),
         "queries",
         grouped.size().to_numpy(),
     )
@@ -275,31 +286,37 @@ def paired_bootstrap_comparisons(
     replicates: int,
     seed: int,
 ) -> pd.DataFrame:
-    baseline_values = (
-        per_query.loc[per_query["method"] == baseline, ["query_id", metric]]
-        .set_index("query_id")[metric]
-    )
     rows: list[dict[str, object]] = []
-    rng = np.random.default_rng(seed)
-    for method in per_query["method"].unique():
-        if method == baseline:
-            continue
-        candidate = (
-            per_query.loc[per_query["method"] == method, ["query_id", metric]]
+    groups = (
+        per_query.groupby("sample_count", sort=False)
+        if "sample_count" in per_query.columns
+        else [(None, per_query)]
+    )
+    for sample_count, condition in groups:
+        baseline_values = (
+            condition.loc[condition["method"] == baseline, ["query_id", metric]]
             .set_index("query_id")[metric]
         )
-        aligned = pd.concat(
-            [baseline_values.rename("baseline"), candidate.rename("candidate")],
-            axis=1,
-            join="inner",
-        ).dropna()
-        differences = (aligned["candidate"] - aligned["baseline"]).to_numpy()
-        sample_indices = rng.integers(
-            0, len(differences), size=(replicates, len(differences))
-        )
-        bootstrap = differences[sample_indices].mean(axis=1)
-        rows.append(
-            {
+        condition_seed = seed if sample_count is None else seed + int(sample_count)
+        rng = np.random.default_rng(condition_seed)
+        for method in condition["method"].unique():
+            if method == baseline:
+                continue
+            candidate = (
+                condition.loc[condition["method"] == method, ["query_id", metric]]
+                .set_index("query_id")[metric]
+            )
+            aligned = pd.concat(
+                [baseline_values.rename("baseline"), candidate.rename("candidate")],
+                axis=1,
+                join="inner",
+            ).dropna()
+            differences = (aligned["candidate"] - aligned["baseline"]).to_numpy()
+            sample_indices = rng.integers(
+                0, len(differences), size=(replicates, len(differences))
+            )
+            bootstrap = differences[sample_indices].mean(axis=1)
+            row: dict[str, object] = {
                 "baseline": baseline,
                 "method": method,
                 "metric": metric,
@@ -311,5 +328,7 @@ def paired_bootstrap_comparisons(
                     (bootstrap <= 0).mean()
                 ),
             }
-        )
+            if sample_count is not None:
+                row["sample_count"] = int(sample_count)
+            rows.append(row)
     return pd.DataFrame(rows)

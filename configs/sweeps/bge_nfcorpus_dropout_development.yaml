@@ -1,0 +1,73 @@
+name: bge-nfcorpus-dropout-development
+artifact_root: artifacts
+device: auto
+num_workers: 0
+
+model_configs:
+  - ../models/bge_base_en_v1_5.yaml
+
+dataset_configs:
+  - ../datasets/nfcorpus.yaml
+
+model_overrides:
+  - label: native-all
+    values:
+      dropout_scope: all
+      dropout_probability: null
+  - label: native-attention
+    values:
+      dropout_scope: attention
+      dropout_probability: null
+  - label: native-hidden
+    values:
+      dropout_scope: hidden
+      dropout_probability: null
+  - label: all-p005
+    values:
+      dropout_scope: all
+      dropout_probability: 0.05
+  - label: all-p010
+    values:
+      dropout_scope: all
+      dropout_probability: 0.10
+  - label: all-p020
+    values:
+      dropout_scope: all
+      dropout_probability: 0.20
+
+experiment:
+  seed: 42
+  query_samples: 16
+  sample_counts: [16]
+  independent_sample_banks: true
+  document_samples: 1
+  retrieval_k: 1000
+  retrieval_backend: auto
+  retrieval_query_batch_size: 128
+  retrieval_corpus_batch_size: 50000
+  ranking_write_query_batch_size: 256
+  metric_cutoffs: [10, 100, 1000]
+  methods:
+    - deterministic
+    - mean_embedding
+    - mean_score
+    - medoid_embedding
+    - trimmed_centroid
+    - rrf
+    - majority_vote
+    - ranking_medoid
+    - maximum_score
+    - variance_penalized_score
+    - oracle_best_of_n
+    - anchored_centroid_a010
+    - anchored_centroid_a025
+    - anchored_centroid_a050
+    - anchored_centroid_a075
+    - margin_gated_anchor
+    - disagreement_gated_anchor
+  bootstrap_replicates: 2000
+
+tags:
+  stage: dropout_development
+  development_dataset_only: "true"
+  primary_metric: ndcg@10

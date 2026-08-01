@@ -24,7 +24,9 @@ dataset:
 experiment:
   name: scifact-bge-pilot
   seed: 42
-  query_samples: 8
+  query_samples: 128
+  sample_counts: [1, 2, 4, 8, 16, 32, 64, 128]
+  independent_sample_banks: true
   document_samples: 1
   retrieval_k: 1000
   metric_cutoffs: [10, 100, 1000]
@@ -40,6 +42,12 @@ experiment:
     - maximum_score
     - variance_penalized_score
     - oracle_best_of_n
+    - anchored_centroid_a010
+    - anchored_centroid_a025
+    - anchored_centroid_a050
+    - anchored_centroid_a075
+    - margin_gated_anchor
+    - disagreement_gated_anchor
   bootstrap_replicates: 2000
 
 tags:

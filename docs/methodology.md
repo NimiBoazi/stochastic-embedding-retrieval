@@ -7,8 +7,11 @@ method improves retrieval over the deterministic encoder. The primary endpoint i
 nDCG@10. Recall@100/1000, MAP@100, MRR@10, latency, storage, and GPU-hours are
 secondary endpoints.
 
-Oracle best-of-N is an explanatory upper bound. It must not be included when
-claiming deployable performance.
+Oracle best-of-N is a stochastic-only explanatory upper bound. Its candidates
+are sampled stochastic rankings; the deterministic baseline is never a
+candidate, even when it is better than every sample. An oracle tie means equal
+metric value among stochastic candidates, not selection of the deterministic
+ranking. It must not be included when claiming deployable performance.
 
 ## Metrics
 
@@ -76,8 +79,8 @@ Pre-registered datasets and roles:
 - SciFact: development and pipeline validation. Methodology may change after
   observing this dataset, so it is not used as the sole confirmatory evidence.
 - FiQA: confirmatory cross-domain evaluation on financial question answering.
-- NFCorpus: confirmatory evaluation with biomedical queries and richer
-  multi-relevance judgments.
+- NFCorpus: development evidence comparing the complete configured BGE-base
+  dropout sweep; because it is used for tuning, it is not confirmatory evidence.
 - BEIR HotpotQA: large-scale, multi-hop external validation after methods and
   hyperparameters are frozen.
 
@@ -90,9 +93,13 @@ single- versus multi-relevance results. `qrels_overlap@k` records how many
 retrieved documents occur in the supplied qrels; it must not be interpreted as
 complete judgment coverage because BEIR qrels are often sparse or positive-only.
 
-Sample-count prefixes: `N = 1, 2, 4, 8, 16, 32, 64`. Generate the maximum bank
-once. Estimate sample-count uncertainty with multiple fixed subsamples rather than
-rerunning model inference.
+Sample-count conditions: `N = 1, 2, 4, 8, 16, 32, 64, 128`. Each condition receives
+an independent stochastic query bank with a disjoint, recorded seed range; query
+embeddings are not reused across N. This requires 255 stochastic query passes per
+query. The dataset and model are loaded once, deterministic documents and queries
+are encoded once, and one document index is reused across all conditions.
+Document embeddings live in a validated content-addressed cache keyed only by the
+document encoding contract, not by experiment-level sampling settings.
 
 Primary dropout condition uses each checkpoint's trained probability. Ablations:
 
@@ -131,9 +138,10 @@ query samples per condition:
 4. all dropout with probabilities 0.05, 0.10, and 0.20
 
 This is a development analysis, not six additional confirmatory hypotheses.
-Any condition selected for later use must be frozen and evaluated unchanged on
-at least one confirmatory dataset. The deterministic baseline is included in
-every condition, but `p=0` is not treated as stochastic dropout.
+Every configured condition is retained and run in later sweep matrices; no
+single dropout condition is selected as a replacement for the others. The
+deterministic baseline is included in every condition, but `p=0` is not treated
+as stochastic dropout.
 
 Aggregation:
 
@@ -148,7 +156,15 @@ Aggregation:
 - maximum sampled score
 - variance-penalized score: sample mean minus one Bessel-corrected (ddof=1)
   sample standard deviation
-- oracle best-of-N selected by per-query nDCG@10
+- deterministic-anchored stochastic centroids with alpha 0.10, 0.25, 0.50,
+  and 0.75: normalize((1-alpha) times deterministic query plus alpha times the
+  normalized stochastic centroid)
+- margin-gated anchor: use the alpha=0.25 anchor only for the bottom quartile of
+  deterministic rank-10/11 score margins within a dataset/N condition
+- disagreement-gated anchor: use that anchor only for the top quartile of mean
+  pairwise stochastic top-10 Jaccard disagreement; N=1 always falls back to
+  deterministic
+- stochastic-only oracle best-of-N selected by per-query nDCG@10
 
 The trimmed fraction (0.20), ranking-medoid depth (100), majority-vote depth
 (100), and variance penalty lambda (1.0) are fixed defaults and recorded in
@@ -159,4 +175,57 @@ Maximum score is interpreted cautiously because its null distribution increases
 with the number of samples. Trimmed-centroid diagnostics retain the identities
 and medoid distances of discarded samples so oracle wins can later be checked
 against outlier removal.
+
+The two gates are pre-specified and label-free: neither thresholds nor decisions
+use qrels. Per-query correlations between gate/distribution features and metric
+deltas use labels and are strictly post-hoc development diagnostics.
+
+## Distribution diagnostics
+
+Distribution analysis reuses saved stochastic embeddings and rankings and never
+pools vectors from unrelated queries. Per query and N it records deterministic
+bias relative to the stochastic centroid, radial summaries around centroid and
+medoid, a geometric-median reference, SVD-based variance concentration and
+effective rank, and deterministic-bias alignment with PC1. Spherical K-means
+for K=2,3,4 reports cosine silhouette, cluster sizes/separation, and fixed-seed
+bootstrap stability. UMAP and t-SNE are not used as evidence.
+
+Fixed-seed bootstrap subsets measure centroid convergence, cosine distance to
+the full-bank centroid, coordinate standard error, and top-10 retrieval overlap.
+Retrieval diagnostics include top-1 entropy, top-10 inclusion/rank/score
+variation, pairwise Jaccard and rank-biased overlap, and relevant-document rank
+movement. Qrel-dependent correlations, oracle-opportunity coverage, and
+win/loss risk summaries are reported separately from deployable methods.
+Saved-run analysis processes ranking rows in bounded query chunks and writes
+separate embedding, cluster, centroid-convergence, per-query retrieval,
+per-document retrieval, correlation, and risk Parquet artifacts.
+
+For BGE-base dropout development, all six dropout conditions run on NFCorpus at
+N=16 and remain separate reported conditions. Sweep execution always evaluates
+every configured model, dataset, and dropout override combination; no result is
+used to suppress or replace another configured run.
+
+E5-base-v2 repeats that NFCorpus N=16 six-condition protocol unchanged as a
+model-family replication. Its results are compared with BGE using absolute
+deterministic performance, within-model aggregation deltas, paired-bootstrap
+intervals, stochastic-only oracle opportunity, and the same embedding/retrieval
+distribution diagnostics. All comparisons remain development evidence.
+
+## Matched artificial-noise oracle controls
+
+Oracle opportunity is compared with two artificial best-of-N controls generated
+from each saved stochastic query bank. For every query and sample, both controls
+exactly match the corresponding dropout sample's angular displacement and
+unit-sphere chord distance from the deterministic embedding:
+
+- full-covariance Gaussian control: tangent directions are sampled from the
+  empirical per-query dropout tangent mean and covariance
+- isotropic control: tangent directions are sampled uniformly
+
+Both are normalized before retrieval and use the same N and linear-gain
+nDCG@10 oracle selection as dropout. Exact angle matching is validated and
+persisted per query. If dropout materially exceeds both controls, its masks
+contain useful model-specific directional structure; equality supports a
+best-of-N random-search explanation. N=1 covariance estimates are explicitly
+marked degenerate rather than interpreted.
 
