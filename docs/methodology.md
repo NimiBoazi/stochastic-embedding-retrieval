@@ -94,11 +94,22 @@ every condition, but `p=0` is not treated as stochastic dropout.
 
 Aggregation:
 
-- normalized centroid
-- medoid sample
-- reciprocal-rank fusion
-- top-k voting
-- maximum score, treated cautiously because its null distribution changes with N
-- agreement-weighted scoring
-- oracle best-of-N
+- normalized centroid of all stochastic embeddings
+- embedding medoid: the sampled embedding with highest mean cosine agreement
+- 20% trimmed centroid: average after removing samples furthest from the medoid
+- reciprocal-rank fusion with offset 60
+- top-k voting with rank-based tie breaking
+- ranking medoid using mean pairwise Jaccard agreement at depth 100
+- maximum sampled score
+- variance-penalized score: sample mean minus one sample standard deviation
+- oracle best-of-N selected by per-query nDCG@10
+
+The trimmed fraction (0.20), ranking-medoid depth (100), and variance penalty
+lambda (1.0) are fixed defaults and recorded in every run manifest. Maximum and
+variance-penalized scoring rerank the union of documents appearing in sampled
+top-k lists; they are candidate-based rather than exhaustive corpus-wide scoring.
+Maximum score is interpreted cautiously because its null distribution increases
+with the number of samples. Trimmed-centroid diagnostics retain the identities
+and medoid distances of discarded samples so oracle wins can later be checked
+against outlier removal.
 

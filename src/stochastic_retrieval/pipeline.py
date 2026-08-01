@@ -33,9 +33,14 @@ from stochastic_retrieval.retrieval import (
     Rankings,
     embedding_diversity,
     majority_vote,
+    maximum_score_rerank,
     mean_embedding,
     medoid_embedding,
+    ranking_medoid,
     reciprocal_rank_fusion,
+    trimmed_centroid,
+    trimmed_centroid_diagnostics,
+    variance_penalized_rerank,
 )
 
 
@@ -185,8 +190,12 @@ def _execute_experiment(
             "mean_embedding",
             "mean_score",
             "medoid_embedding",
+            "trimmed_centroid",
             "rrf",
             "majority_vote",
+            "ranking_medoid",
+            "maximum_score",
+            "variance_penalized_score",
             "oracle_best_of_n",
         }
     )
@@ -214,6 +223,7 @@ def _execute_experiment(
         _save_sample_rankings(store, sample_rankings)
 
     with reporter.stage("aggregate_rankings", methods=sorted(requested)):
+        trimmed_diagnostics: pd.DataFrame | None = None
         if "mean_embedding" in requested:
             rankings["mean_embedding"] = retriever.search(
                 mean_embedding(stochastic_queries)
@@ -227,6 +237,18 @@ def _execute_experiment(
             rankings["medoid_embedding"] = retriever.search(
                 medoid_embedding(stochastic_queries)
             )
+        if "trimmed_centroid" in requested:
+            rankings["trimmed_centroid"] = retriever.search(
+                trimmed_centroid(
+                    stochastic_queries,
+                    config.experiment.trim_fraction,
+                )
+            )
+            trimmed_diagnostics = trimmed_centroid_diagnostics(
+                stochastic_queries,
+                query_ids,
+                config.experiment.trim_fraction,
+            )
         if "rrf" in requested:
             rankings["rrf"] = reciprocal_rank_fusion(
                 sample_rankings, config.experiment.retrieval_k
@@ -234,6 +256,26 @@ def _execute_experiment(
         if "majority_vote" in requested:
             rankings["majority_vote"] = majority_vote(
                 sample_rankings, config.experiment.retrieval_k
+            )
+        if "ranking_medoid" in requested:
+            rankings["ranking_medoid"] = ranking_medoid(
+                sample_rankings,
+                depth=config.experiment.ranking_medoid_depth,
+            )
+        if "maximum_score" in requested:
+            rankings["maximum_score"] = maximum_score_rerank(
+                stochastic_queries,
+                document_embeddings,
+                sample_rankings,
+                config.experiment.retrieval_k,
+            )
+        if "variance_penalized_score" in requested:
+            rankings["variance_penalized_score"] = variance_penalized_rerank(
+                stochastic_queries,
+                document_embeddings,
+                sample_rankings,
+                config.experiment.retrieval_k,
+                penalty=config.experiment.variance_penalty_lambda,
             )
         if "oracle_best_of_n" in requested:
             oracle, selections = oracle_best_of_n(
@@ -304,6 +346,12 @@ def _execute_experiment(
         )
         store.write_dataframe(comparisons, "metrics", "paired_bootstrap")
         store.write_dataframe(diversity, "analyses", "embedding_diversity")
+        if trimmed_diagnostics is not None:
+            store.write_dataframe(
+                trimmed_diagnostics,
+                "analyses",
+                "trimmed_centroid_samples",
+            )
         store.write_dataframe(
             query_diagnostics,
             "analyses",

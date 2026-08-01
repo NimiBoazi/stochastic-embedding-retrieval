@@ -43,14 +43,21 @@ class ExperimentConfig:
     retrieval_query_batch_size: int = 128
     retrieval_corpus_batch_size: int = 50_000
     ranking_write_query_batch_size: int = 256
+    trim_fraction: float = 0.20
+    ranking_medoid_depth: int = 100
+    variance_penalty_lambda: float = 1.0
     metric_cutoffs: tuple[int, ...] = (10, 100, 1000)
     methods: tuple[str, ...] = (
         "deterministic",
         "mean_embedding",
         "mean_score",
         "medoid_embedding",
+        "trimmed_centroid",
         "rrf",
         "majority_vote",
+        "ranking_medoid",
+        "maximum_score",
+        "variance_penalized_score",
         "oracle_best_of_n",
     )
     bootstrap_replicates: int = 2000

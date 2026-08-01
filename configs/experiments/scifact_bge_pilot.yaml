@@ -33,8 +33,12 @@ experiment:
     - mean_embedding
     - mean_score
     - medoid_embedding
+    - trimmed_centroid
     - rrf
     - majority_vote
+    - ranking_medoid
+    - maximum_score
+    - variance_penalized_score
     - oracle_best_of_n
   bootstrap_replicates: 2000
 

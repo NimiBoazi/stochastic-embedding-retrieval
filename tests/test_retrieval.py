@@ -5,8 +5,12 @@ from stochastic_retrieval.retrieval import (
     Rankings,
     exact_search,
     majority_vote,
+    maximum_score_rerank,
     mean_embedding,
+    ranking_medoid,
     reciprocal_rank_fusion,
+    trimmed_centroid,
+    variance_penalized_rerank,
 )
 
 
@@ -75,3 +79,57 @@ def test_reusable_numpy_retriever_handles_multiple_query_sets() -> None:
 
     assert first.indices[0, 0] == 0
     assert second.indices[0, 0] == 1
+
+
+def test_trimmed_centroid_removes_embedding_outlier() -> None:
+    samples = np.array(
+        [
+            [[1.0, 0.0]],
+            [[0.99, 0.01]],
+            [[0.98, -0.02]],
+            [[1.0, 0.02]],
+            [[-1.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    result = trimmed_centroid(samples, trim_fraction=0.20)
+
+    assert result[0, 0] > 0.99
+    assert abs(result[0, 1]) < 0.02
+
+
+def test_ranking_medoid_chooses_consensus_ranking() -> None:
+    rankings = [
+        Rankings(np.array([[0, 1, 2]]), np.array([[1.0, 0.9, 0.8]])),
+        Rankings(np.array([[0, 1, 3]]), np.array([[1.0, 0.9, 0.8]])),
+        Rankings(np.array([[4, 5, 6]]), np.array([[1.0, 0.9, 0.8]])),
+    ]
+
+    result = ranking_medoid(rankings, depth=3)
+
+    np.testing.assert_array_equal(result.indices, rankings[0].indices)
+
+
+def test_score_aggregators_distinguish_extreme_and_consistent_documents() -> None:
+    samples = np.array([[[1.0, 0.0]], [[0.0, 1.0]]], dtype=np.float32)
+    corpus = np.array(
+        [[1.0, 0.0], [0.0, 1.0], [0.6, 0.6]],
+        dtype=np.float32,
+    )
+    sampled_rankings = [
+        Rankings(np.array([[0, 2, 1]]), np.array([[1.0, 0.6, 0.0]])),
+        Rankings(np.array([[1, 2, 0]]), np.array([[1.0, 0.6, 0.0]])),
+    ]
+
+    maximum = maximum_score_rerank(samples, corpus, sampled_rankings, k=3)
+    consistent = variance_penalized_rerank(
+        samples,
+        corpus,
+        sampled_rankings,
+        k=3,
+        penalty=1.0,
+    )
+
+    assert maximum.indices[0, 0] == 0
+    assert consistent.indices[0, 0] == 2

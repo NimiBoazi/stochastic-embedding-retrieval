@@ -41,7 +41,8 @@ NFCorpus (confirmatory), and BEIR HotpotQA (large-scale multi-hop validation).
 - Deterministic document and query embeddings.
 - Reproducible stochastic query embeddings with selected dropout modules active.
 - Exact, blockwise inner-product retrieval.
-- Mean embedding, mean score, medoid, reciprocal-rank fusion, majority vote, and
+- Mean embedding/score, medoid, trimmed centroid, reciprocal-rank fusion,
+  majority vote, ranking medoid, maximum score, variance-penalized score, and
   oracle best-of-N aggregation.
 - nDCG, recall, MAP, and MRR at configurable cutoffs.
 - Paired bootstrap confidence intervals against the deterministic baseline.
@@ -133,6 +134,7 @@ artifacts/runs/<experiment-name>-<fingerprint>/
 ├── analyses/
 │   ├── embedding_diversity.parquet
 │   ├── dataset_query_diagnostics.parquet
+│   ├── trimmed_centroid_samples.parquet
 │   └── oracle_selections.parquet
 ├── events.jsonl
 ├── qrels.json
