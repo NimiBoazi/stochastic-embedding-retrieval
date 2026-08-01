@@ -1,0 +1,9 @@
+name: intfloat/e5-base-v2
+revision: null
+query_prefix: "query: "
+document_prefix: "passage: "
+batch_size: 32
+max_length: 512
+normalize: true
+dropout_scope: all
+dropout_probability: null

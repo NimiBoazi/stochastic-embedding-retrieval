@@ -1,0 +1,4 @@
+name: hotpotqa
+ir_dataset_id: beir/hotpotqa/test
+query_limit: null
+document_limit: null

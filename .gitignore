@@ -1,0 +1,24 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# Large or reproducible research artifacts
+artifacts/*
+!artifacts/.gitkeep
+reports/figures/*
+!reports/figures/.gitkeep
+reports/tables/*
+!reports/tables/.gitkeep
+
+# Local experiment tracking and secrets
+mlruns/
+wandb/
+.env
+*.log

@@ -1,0 +1,4 @@
+name: scifact
+ir_dataset_id: beir/scifact/test
+query_limit: null
+document_limit: null

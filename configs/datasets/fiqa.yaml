@@ -1,0 +1,4 @@
+name: fiqa
+ir_dataset_id: beir/fiqa/test
+query_limit: null
+document_limit: null
