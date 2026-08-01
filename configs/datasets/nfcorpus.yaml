@@ -1,0 +1,4 @@
+name: nfcorpus
+ir_dataset_id: beir/nfcorpus/test
+query_limit: null
+document_limit: null

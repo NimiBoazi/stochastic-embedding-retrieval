@@ -39,6 +39,10 @@ class ExperimentConfig:
     query_samples: int = 8
     document_samples: int = 1
     retrieval_k: int = 1000
+    retrieval_backend: str = "auto"
+    retrieval_query_batch_size: int = 128
+    retrieval_corpus_batch_size: int = 50_000
+    ranking_write_query_batch_size: int = 256
     metric_cutoffs: tuple[int, ...] = (10, 100, 1000)
     methods: tuple[str, ...] = (
         "deterministic",
@@ -116,3 +120,61 @@ def load_config(path: str | Path) -> ProjectConfig:
         num_workers=raw.get("num_workers", 0),
         tags=raw.get("tags", {}),
     )
+
+
+def load_sweep(path: str | Path) -> list[ProjectConfig]:
+    config_path = Path(path).resolve()
+    raw = _load_yaml_mapping(config_path)
+    sweep_name = raw.get("name")
+    model_references = raw.get("model_configs")
+    dataset_references = raw.get("dataset_configs")
+    if not isinstance(sweep_name, str) or not sweep_name:
+        raise ValueError("Sweep configuration requires a non-empty 'name'")
+    if not isinstance(model_references, list) or not model_references:
+        raise ValueError("Sweep configuration requires non-empty 'model_configs'")
+    if not isinstance(dataset_references, list) or not dataset_references:
+        raise ValueError("Sweep configuration requires non-empty 'dataset_configs'")
+
+    experiment_template = _require_mapping(raw.get("experiment"), "experiment").copy()
+    experiment_template.pop("name", None)
+    for key in ("metric_cutoffs", "methods"):
+        if key in experiment_template:
+            experiment_template[key] = tuple(experiment_template[key])
+
+    runs: list[ProjectConfig] = []
+    for model_reference in model_references:
+        model_path = _resolve_reference(model_reference, config_path, "model_configs")
+        model = ModelConfig(**_load_yaml_mapping(model_path))
+        for dataset_reference in dataset_references:
+            dataset_path = _resolve_reference(
+                dataset_reference, config_path, "dataset_configs"
+            )
+            dataset = DatasetConfig(**_load_yaml_mapping(dataset_path))
+            run_name = f"{sweep_name}-{dataset.name}-{model_path.stem}"
+            tags = {
+                **raw.get("tags", {}),
+                "sweep": sweep_name,
+                "model_config": model_path.stem,
+                "dataset_config": dataset_path.stem,
+            }
+            runs.append(
+                ProjectConfig(
+                    model=model,
+                    dataset=dataset,
+                    experiment=ExperimentConfig(
+                        name=run_name,
+                        **experiment_template,
+                    ),
+                    artifact_root=raw.get("artifact_root", "artifacts"),
+                    device=raw.get("device", "auto"),
+                    num_workers=raw.get("num_workers", 0),
+                    tags=tags,
+                )
+            )
+    return runs
+
+
+def _resolve_reference(value: Any, config_path: Path, key: str) -> Path:
+    if not isinstance(value, str):
+        raise ValueError(f"Every '{key}' entry must be a path string")
+    return (config_path.parent / value).resolve()

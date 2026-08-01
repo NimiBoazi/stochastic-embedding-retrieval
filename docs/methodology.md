@@ -46,12 +46,24 @@ This is a pre-specified two-size comparison within one family. It is not suffici
 to claim a general scaling law. BGE-large is not part of the four-model
 cross-family confirmatory comparison.
 
-Datasets:
+Pre-registered datasets and roles:
 
-- SciFact
-- NFCorpus or FiQA
-- BEIR HotpotQA
-- One additional large BEIR collection if compute permits
+- SciFact: development and pipeline validation. Methodology may change after
+  observing this dataset, so it is not used as the sole confirmatory evidence.
+- FiQA: confirmatory cross-domain evaluation on financial question answering.
+- NFCorpus: confirmatory evaluation with biomedical queries and richer
+  multi-relevance judgments.
+- BEIR HotpotQA: large-scale, multi-hop external validation after methods and
+  hyperparameters are frozen.
+
+The four base-scale models run on all four datasets. BGE-large is a secondary
+scaling condition and is required on SciFact plus at least one confirmatory
+dataset; it does not need to be run on HotpotQA unless compute permits.
+
+For every dataset, report the number of relevant documents per query and stratify
+single- versus multi-relevance results. `qrels_overlap@k` records how many
+retrieved documents occur in the supplied qrels; it must not be interpreted as
+complete judgment coverage because BEIR qrels are often sparse or positive-only.
 
 Sample-count prefixes: `N = 1, 2, 4, 8, 16, 32, 64`. Generate the maximum bank
 once. Estimate sample-count uncertainty with multiple fixed subsamples rather than

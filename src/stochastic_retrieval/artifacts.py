@@ -4,6 +4,7 @@ import hashlib
 import json
 import platform
 import subprocess
+from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 
 from stochastic_retrieval.config import ProjectConfig
@@ -70,6 +73,31 @@ class ArtifactStore:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{name}.parquet"
         frame.to_parquet(path, index=False)
+        return path
+
+    def write_dataframe_chunks(
+        self,
+        frames: Iterable[pd.DataFrame],
+        category: str,
+        name: str,
+    ) -> Path:
+        directory = self.run_dir / category
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{name}.parquet"
+        writer: pq.ParquetWriter | None = None
+        try:
+            for frame in frames:
+                if frame.empty:
+                    continue
+                table = pa.Table.from_pandas(frame, preserve_index=False)
+                if writer is None:
+                    writer = pq.ParquetWriter(path, table.schema, compression="zstd")
+                writer.write_table(table)
+        finally:
+            if writer is not None:
+                writer.close()
+        if writer is None:
+            raise ValueError(f"No rows were produced for {category}/{name}")
         return path
 
     def write_manifest(

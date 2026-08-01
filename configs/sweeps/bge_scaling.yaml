@@ -1,0 +1,35 @@
+name: bge-scaling
+artifact_root: artifacts
+device: auto
+num_workers: 0
+
+model_configs:
+  - ../models/bge_large_en_v1_5.yaml
+
+dataset_configs:
+  - ../datasets/scifact.yaml
+  - ../datasets/fiqa.yaml
+
+experiment:
+  seed: 42
+  query_samples: 8
+  document_samples: 1
+  retrieval_k: 1000
+  retrieval_backend: auto
+  retrieval_query_batch_size: 128
+  retrieval_corpus_batch_size: 50000
+  ranking_write_query_batch_size: 256
+  metric_cutoffs: [10, 100, 1000]
+  methods:
+    - deterministic
+    - mean_embedding
+    - mean_score
+    - medoid_embedding
+    - rrf
+    - majority_vote
+    - oracle_best_of_n
+  bootstrap_replicates: 2000
+
+tags:
+  stage: bge_two_size_ablation
+  primary_metric: ndcg@10

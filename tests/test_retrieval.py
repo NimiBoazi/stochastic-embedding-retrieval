@@ -1,6 +1,7 @@
 import numpy as np
 
 from stochastic_retrieval.retrieval import (
+    DenseRetriever,
     Rankings,
     exact_search,
     majority_vote,
@@ -63,3 +64,14 @@ def test_rank_fusion_prefers_repeated_documents() -> None:
 
     assert rrf.indices[0, 0] == 2
     assert set(vote.indices[0, :2]) == {1, 2}
+
+
+def test_reusable_numpy_retriever_handles_multiple_query_sets() -> None:
+    corpus = np.eye(2, dtype=np.float32)
+    retriever = DenseRetriever(corpus, k=1, backend="numpy")
+
+    first = retriever.search(np.array([[1.0, 0.0]], dtype=np.float32))
+    second = retriever.search(np.array([[0.0, 1.0]], dtype=np.float32))
+
+    assert first.indices[0, 0] == 0
+    assert second.indices[0, 0] == 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 
 import numpy as np
 import pandas as pd
@@ -38,6 +39,26 @@ def ranking_frame(
     return pd.DataFrame(rows)
 
 
+def iter_ranking_frames(
+    method: str,
+    rankings: Rankings,
+    query_ids: list[str],
+    document_ids: list[str],
+    query_batch_size: int = 256,
+) -> Iterator[pd.DataFrame]:
+    for start in range(0, len(query_ids), query_batch_size):
+        stop = min(start + query_batch_size, len(query_ids))
+        yield ranking_frame(
+            method,
+            Rankings(
+                indices=rankings.indices[start:stop],
+                scores=rankings.scores[start:stop],
+            ),
+            query_ids[start:stop],
+            document_ids,
+        )
+
+
 def evaluate_rankings(
     method: str,
     rankings: Rankings,
@@ -54,12 +75,32 @@ def evaluate_rankings(
             if index >= 0
         ]
         relevance = qrels.get(query_id, {})
-        row: dict[str, object] = {"method": method, "query_id": query_id}
+        relevant_count = sum(value > 0 for value in relevance.values())
+        row: dict[str, object] = {
+            "method": method,
+            "query_id": query_id,
+            "relevant_documents": relevant_count,
+            "qrels_entries": len(relevance),
+            "relevance_group": (
+                "none"
+                if relevant_count == 0
+                else "single"
+                if relevant_count == 1
+                else "multiple"
+            ),
+        }
         for cutoff in cutoffs:
             row[f"ndcg@{cutoff}"] = ndcg(retrieved, relevance, cutoff)
             row[f"recall@{cutoff}"] = recall(retrieved, relevance, cutoff)
             row[f"map@{cutoff}"] = average_precision(retrieved, relevance, cutoff)
             row[f"mrr@{cutoff}"] = reciprocal_rank(retrieved, relevance, cutoff)
+            considered = retrieved[:cutoff]
+            row[f"qrels_overlap@{cutoff}"] = (
+                sum(document_id in relevance for document_id in considered)
+                / len(considered)
+                if considered
+                else 0.0
+            )
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -147,16 +188,52 @@ def oracle_best_of_n(
 
 
 def summarize(per_query: pd.DataFrame) -> pd.DataFrame:
-    metric_columns = [
-        column
-        for column in per_query.columns
-        if column not in {"method", "query_id"}
-    ]
+    metric_columns = list(
+        per_query.drop(columns=["method", "query_id"]).select_dtypes(include="number")
+    )
     return (
         per_query.groupby("method", sort=False)[metric_columns]
         .mean()
         .reset_index()
     )
+
+
+def summarize_by_relevance_group(per_query: pd.DataFrame) -> pd.DataFrame:
+    metric_columns = [column for column in per_query.columns if "@" in column]
+    grouped = per_query.groupby(["method", "relevance_group"], sort=False)
+    result = grouped[metric_columns].mean().reset_index()
+    result.insert(
+        2,
+        "queries",
+        grouped.size().to_numpy(),
+    )
+    return result
+
+
+def dataset_query_diagnostics(
+    query_ids: list[str],
+    qrels: dict[str, dict[str, int]],
+) -> pd.DataFrame:
+    rows = []
+    for query_id in query_ids:
+        relevance = qrels.get(query_id, {})
+        positive = [value for value in relevance.values() if value > 0]
+        rows.append(
+            {
+                "query_id": query_id,
+                "qrels_entries": len(relevance),
+                "relevant_documents": len(positive),
+                "maximum_relevance_grade": max(positive, default=0),
+                "relevance_group": (
+                    "none"
+                    if not positive
+                    else "single"
+                    if len(positive) == 1
+                    else "multiple"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def paired_bootstrap_comparisons(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
 
 import numpy as np
@@ -64,6 +65,107 @@ def exact_search(
             best_indices, order, axis=1
         )
     return Rankings(indices=all_indices, scores=all_scores)
+
+
+class DenseRetriever:
+    """Reusable exact-search backend; FAISS indexes the corpus only once."""
+
+    def __init__(
+        self,
+        corpus: np.ndarray,
+        k: int,
+        backend: str = "auto",
+        query_batch_size: int = 128,
+        corpus_batch_size: int = 50_000,
+    ) -> None:
+        valid_backends = {"auto", "numpy", "faiss-cpu", "faiss-gpu"}
+        if backend not in valid_backends:
+            raise ValueError(
+                f"retrieval_backend must be one of {sorted(valid_backends)}"
+            )
+        self.corpus = corpus
+        self.k = min(k, len(corpus))
+        self.query_batch_size = query_batch_size
+        self.corpus_batch_size = corpus_batch_size
+        self.backend = (
+            "faiss-cpu"
+            if backend == "auto" and importlib.util.find_spec("faiss") is not None
+            else "numpy"
+            if backend == "auto"
+            else backend
+        )
+        self.index = self._build_faiss_index() if self.backend.startswith("faiss") else None
+
+    def search(self, queries: np.ndarray) -> Rankings:
+        if self.backend == "numpy":
+            return exact_search(
+                queries,
+                self.corpus,
+                self.k,
+                query_batch_size=self.query_batch_size,
+                corpus_batch_size=self.corpus_batch_size,
+            )
+        return self._search_faiss(queries)
+
+    def _build_faiss_index(self) -> object:
+        try:
+            import faiss
+        except ImportError as exc:
+            raise ImportError(
+                "FAISS retrieval requested but FAISS is not installed. "
+                "Install the cpu-index or gpu project extra."
+            ) from exc
+
+        index = faiss.IndexFlatIP(int(self.corpus.shape[1]))
+        if self.backend == "faiss-gpu":
+            if not hasattr(faiss, "get_num_gpus") or faiss.get_num_gpus() < 1:
+                raise RuntimeError(
+                    "faiss-gpu was requested but no FAISS GPU is available"
+                )
+            index = faiss.index_cpu_to_all_gpus(index)
+        for start in tqdm(
+            range(0, len(self.corpus), self.corpus_batch_size),
+            desc="Building FAISS index",
+            unit="corpus-batches",
+        ):
+            block = np.ascontiguousarray(
+                self.corpus[start : start + self.corpus_batch_size],
+                dtype=np.float32,
+            )
+            index.add(block)
+        return index
+
+    def _search_faiss(self, queries: np.ndarray) -> Rankings:
+        all_scores = np.empty((len(queries), self.k), dtype=np.float32)
+        all_indices = np.empty((len(queries), self.k), dtype=np.int64)
+        for start in tqdm(
+            range(0, len(queries), self.query_batch_size),
+            desc="FAISS retrieval",
+            unit="query-batches",
+        ):
+            stop = min(start + self.query_batch_size, len(queries))
+            block = np.ascontiguousarray(queries[start:stop], dtype=np.float32)
+            scores, indices = self.index.search(block, self.k)
+            all_scores[start:stop] = scores
+            all_indices[start:stop] = indices
+        return Rankings(indices=all_indices, scores=all_scores)
+
+
+def search_embeddings(
+    queries: np.ndarray,
+    corpus: np.ndarray,
+    k: int,
+    backend: str = "auto",
+    query_batch_size: int = 128,
+    corpus_batch_size: int = 50_000,
+) -> Rankings:
+    return DenseRetriever(
+        corpus,
+        k,
+        backend,
+        query_batch_size,
+        corpus_batch_size,
+    ).search(queries)
 
 
 def mean_embedding(samples: np.ndarray) -> np.ndarray:

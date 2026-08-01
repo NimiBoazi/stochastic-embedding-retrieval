@@ -32,6 +32,9 @@ Model files explicitly declare query/document prefixes, pooling, expected output
 dimension, and native dropout behavior. Experiment YAML can reference reusable
 model and dataset files through `model_config` and `dataset_config`.
 
+The pre-registered retrieval datasets are SciFact (development), FiQA and
+NFCorpus (confirmatory), and BEIR HotpotQA (large-scale multi-hop validation).
+
 ## Implemented pilot
 
 - Streaming BEIR dataset access through `ir_datasets`.
@@ -79,6 +82,20 @@ The first invocation downloads the BEIR collection and Hugging Face model.
 The remaining SciFact screening configurations are in `configs/experiments/`.
 Run each independently so that failures and artifacts remain isolated by model.
 
+List the complete 4-model × 4-dataset matrix without starting it:
+
+```bash
+stochastic-retrieval sweep configs/sweeps/core_retrieval.yaml
+```
+
+Pass `--execute` only after reviewing the 16 conditions. Each condition remains
+an independent, resumable artifact run, and one failure does not discard the
+other completed conditions.
+
+The secondary `configs/sweeps/bge_scaling.yaml` adds BGE-large on SciFact and
+FiQA. Its BGE-base comparison values come from the core sweep, avoiding duplicate
+inference.
+
 Real-checkpoint contract tests are opt-in because they download all five models:
 
 ```bash
@@ -101,9 +118,11 @@ artifacts/runs/<experiment-name>-<fingerprint>/
 ├── metrics/
 │   ├── per_query.parquet
 │   ├── summary.parquet
+│   ├── summary_by_relevance_group.parquet
 │   └── paired_bootstrap.parquet
 ├── analyses/
 │   ├── embedding_diversity.parquet
+│   ├── dataset_query_diagnostics.parquet
 │   └── oracle_selections.parquet
 ├── events.jsonl
 ├── qrels.json
@@ -136,9 +155,16 @@ or invalid runs distinguishable from successful experiments.
 - Query/document prefixes are explicit and model-specific.
 - Deterministic and stochastic representations use identical preprocessing.
 - All methods are evaluated per query, enabling paired statistical tests.
+- Per-query outputs record relevant-document counts and qrels overlap, and
+  summaries separate single-relevance from multi-relevance queries.
 - `mean_score` is retained as a named experimental condition, but for dot-product
   retrieval it is algebraically equivalent to scoring with an unnormalized mean
   query. Query-vector L2 normalization only rescales all scores for that query,
   so it also does not change ranking.
 
 See [docs/methodology.md](docs/methodology.md) for the staged experiment design.
+
+For large corpora, set `retrieval_backend: faiss-gpu` after installing the GPU
+extra. The FAISS corpus index is built once and reused across deterministic,
+sampled, and aggregated queries. Ranking rows are written to Parquet in bounded
+query chunks rather than accumulated into one in-memory table.

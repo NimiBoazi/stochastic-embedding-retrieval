@@ -19,17 +19,19 @@ from stochastic_retrieval.encoding import (
     inspect_embedding_file,
 )
 from stochastic_retrieval.evaluation import (
+    dataset_query_diagnostics,
     evaluate_rankings,
+    iter_ranking_frames,
     oracle_best_of_n,
     paired_bootstrap_comparisons,
-    ranking_frame,
     summarize,
+    summarize_by_relevance_group,
 )
 from stochastic_retrieval.reporting import RunReporter
 from stochastic_retrieval.retrieval import (
+    DenseRetriever,
     Rankings,
     embedding_diversity,
-    exact_search,
     majority_vote,
     mean_embedding,
     medoid_embedding,
@@ -196,35 +198,34 @@ def _execute_experiment(
         "retrieve_base_rankings",
         deterministic_runs=1,
         stochastic_runs=config.experiment.query_samples,
+        backend=config.experiment.retrieval_backend,
     ):
-        rankings["deterministic"] = exact_search(
-            deterministic_queries, document_embeddings, config.experiment.retrieval_k
+        retriever = DenseRetriever(
+            document_embeddings,
+            config.experiment.retrieval_k,
+            backend=config.experiment.retrieval_backend,
+            query_batch_size=config.experiment.retrieval_query_batch_size,
+            corpus_batch_size=config.experiment.retrieval_corpus_batch_size,
         )
+        rankings["deterministic"] = retriever.search(deterministic_queries)
         sample_rankings = [
-            exact_search(sample, document_embeddings, config.experiment.retrieval_k)
-            for sample in stochastic_queries
+            retriever.search(sample) for sample in stochastic_queries
         ]
         _save_sample_rankings(store, sample_rankings)
 
     with reporter.stage("aggregate_rankings", methods=sorted(requested)):
         if "mean_embedding" in requested:
-            rankings["mean_embedding"] = exact_search(
-                mean_embedding(stochastic_queries),
-                document_embeddings,
-                config.experiment.retrieval_k,
+            rankings["mean_embedding"] = retriever.search(
+                mean_embedding(stochastic_queries)
             )
         if "mean_score" in requested:
             # Dot(mean(q_i), d) exactly equals mean_i dot(q_i, d).
-            rankings["mean_score"] = exact_search(
-                stochastic_queries.mean(axis=0),
-                document_embeddings,
-                config.experiment.retrieval_k,
+            rankings["mean_score"] = retriever.search(
+                stochastic_queries.mean(axis=0)
             )
         if "medoid_embedding" in requested:
-            rankings["medoid_embedding"] = exact_search(
-                medoid_embedding(stochastic_queries),
-                document_embeddings,
-                config.experiment.retrieval_k,
+            rankings["medoid_embedding"] = retriever.search(
+                medoid_embedding(stochastic_queries)
             )
         if "rrf" in requested:
             rankings["rrf"] = reciprocal_rank_fusion(
@@ -265,14 +266,9 @@ def _execute_experiment(
             ],
             ignore_index=True,
         )
-        ranking_rows = pd.concat(
-            [
-                ranking_frame(method, ranking, query_ids, document_ids)
-                for method, ranking in selected_rankings.items()
-            ],
-            ignore_index=True,
-        )
         summary = summarize(per_query)
+        stratified_summary = summarize_by_relevance_group(per_query)
+        query_diagnostics = dataset_query_diagnostics(query_ids, qrels)
         primary_metric = (
             "ndcg@10"
             if 10 in config.experiment.metric_cutoffs
@@ -289,11 +285,30 @@ def _execute_experiment(
     reporter.emit("metrics_summary", records=summary.to_dict(orient="records"))
 
     with reporter.stage("persist_results"):
-        store.write_dataframe(ranking_rows, "rankings", "aggregated_rankings")
+        store.write_dataframe_chunks(
+            _iter_all_ranking_frames(
+                selected_rankings,
+                query_ids,
+                document_ids,
+                config.experiment.ranking_write_query_batch_size,
+            ),
+            "rankings",
+            "aggregated_rankings",
+        )
         store.write_dataframe(per_query, "metrics", "per_query")
         store.write_dataframe(summary, "metrics", "summary")
+        store.write_dataframe(
+            stratified_summary,
+            "metrics",
+            "summary_by_relevance_group",
+        )
         store.write_dataframe(comparisons, "metrics", "paired_bootstrap")
         store.write_dataframe(diversity, "analyses", "embedding_diversity")
+        store.write_dataframe(
+            query_diagnostics,
+            "analyses",
+            "dataset_query_diagnostics",
+        )
         _write_qrels(store, qrels)
         store.write_manifest(
             config,
@@ -320,6 +335,22 @@ def _execute_experiment(
             },
         )
     return store
+
+
+def _iter_all_ranking_frames(
+    rankings: dict[str, Rankings],
+    query_ids: list[str],
+    document_ids: list[str],
+    query_batch_size: int,
+) -> Iterable[pd.DataFrame]:
+    for method, ranking in rankings.items():
+        yield from iter_ranking_frames(
+            method,
+            ranking,
+            query_ids,
+            document_ids,
+            query_batch_size=query_batch_size,
+        )
 
 
 def _encode_if_missing(
