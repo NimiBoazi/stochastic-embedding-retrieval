@@ -60,3 +60,35 @@ def test_sweep_expands_model_dataset_cartesian_product(tmp_path) -> None:
     assert len(runs) == 2
     assert {run.dataset.name for run in runs} == {"first", "second"}
     assert all(run.experiment.query_samples == 4 for run in runs)
+
+
+def test_sweep_expands_model_overrides(tmp_path) -> None:
+    (tmp_path / "model.yaml").write_text(
+        "name: example/model\ndropout_scope: all\ndropout_probability: null\n"
+    )
+    (tmp_path / "dataset.yaml").write_text(
+        "name: example\nir_dataset_id: beir/example/test\n"
+    )
+    sweep_path = tmp_path / "sweep.yaml"
+    sweep_path.write_text(
+        "\n".join(
+            [
+                "name: dropout",
+                "model_configs: [model.yaml]",
+                "dataset_configs: [dataset.yaml]",
+                "model_overrides:",
+                "  - label: attention",
+                "    values: {dropout_scope: attention}",
+                "  - label: p020",
+                "    values: {dropout_probability: 0.20}",
+                "experiment: {}",
+            ]
+        )
+    )
+
+    runs = load_sweep(sweep_path)
+
+    assert len(runs) == 2
+    assert runs[0].model.dropout_scope == "attention"
+    assert runs[1].model.dropout_probability == 0.20
+    assert runs[1].tags["model_override"] == "p020"

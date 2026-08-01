@@ -134,6 +134,11 @@ def load_sweep(path: str | Path) -> list[ProjectConfig]:
         raise ValueError("Sweep configuration requires non-empty 'model_configs'")
     if not isinstance(dataset_references, list) or not dataset_references:
         raise ValueError("Sweep configuration requires non-empty 'dataset_configs'")
+    model_overrides = raw.get("model_overrides")
+    if model_overrides is None:
+        model_overrides = [{"label": None, "values": {}}]
+    if not isinstance(model_overrides, list) or not model_overrides:
+        raise ValueError("'model_overrides' must be a non-empty list when provided")
 
     experiment_template = _require_mapping(raw.get("experiment"), "experiment").copy()
     experiment_template.pop("name", None)
@@ -144,33 +149,47 @@ def load_sweep(path: str | Path) -> list[ProjectConfig]:
     runs: list[ProjectConfig] = []
     for model_reference in model_references:
         model_path = _resolve_reference(model_reference, config_path, "model_configs")
-        model = ModelConfig(**_load_yaml_mapping(model_path))
-        for dataset_reference in dataset_references:
-            dataset_path = _resolve_reference(
-                dataset_reference, config_path, "dataset_configs"
+        base_model = _load_yaml_mapping(model_path)
+        for override in model_overrides:
+            if not isinstance(override, dict):
+                raise ValueError("Every 'model_overrides' entry must be a mapping")
+            label = override.get("label")
+            values = override.get("values", {})
+            if label is not None and (not isinstance(label, str) or not label):
+                raise ValueError("Model override labels must be non-empty strings")
+            if not isinstance(values, dict):
+                raise ValueError("Model override 'values' must be a mapping")
+            model = ModelConfig(**{**base_model, **values})
+            model_label = (
+                f"{model_path.stem}-{label}" if label is not None else model_path.stem
             )
-            dataset = DatasetConfig(**_load_yaml_mapping(dataset_path))
-            run_name = f"{sweep_name}-{dataset.name}-{model_path.stem}"
-            tags = {
-                **raw.get("tags", {}),
-                "sweep": sweep_name,
-                "model_config": model_path.stem,
-                "dataset_config": dataset_path.stem,
-            }
-            runs.append(
-                ProjectConfig(
-                    model=model,
-                    dataset=dataset,
-                    experiment=ExperimentConfig(
-                        name=run_name,
-                        **experiment_template,
-                    ),
-                    artifact_root=raw.get("artifact_root", "artifacts"),
-                    device=raw.get("device", "auto"),
-                    num_workers=raw.get("num_workers", 0),
-                    tags=tags,
+            for dataset_reference in dataset_references:
+                dataset_path = _resolve_reference(
+                    dataset_reference, config_path, "dataset_configs"
                 )
-            )
+                dataset = DatasetConfig(**_load_yaml_mapping(dataset_path))
+                run_name = f"{sweep_name}-{dataset.name}-{model_label}"
+                tags = {
+                    **raw.get("tags", {}),
+                    "sweep": sweep_name,
+                    "model_config": model_path.stem,
+                    "dataset_config": dataset_path.stem,
+                    **({"model_override": label} if label is not None else {}),
+                }
+                runs.append(
+                    ProjectConfig(
+                        model=model,
+                        dataset=dataset,
+                        experiment=ExperimentConfig(
+                            name=run_name,
+                            **experiment_template,
+                        ),
+                        artifact_root=raw.get("artifact_root", "artifacts"),
+                        device=raw.get("device", "auto"),
+                        num_workers=raw.get("num_workers", 0),
+                        tags=tags,
+                    )
+                )
     return runs
 
 

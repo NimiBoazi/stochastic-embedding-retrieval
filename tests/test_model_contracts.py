@@ -7,7 +7,7 @@ import yaml
 
 from stochastic_retrieval.config import ModelConfig
 from stochastic_retrieval.data import TextRecord
-from stochastic_retrieval.encoding import SentenceEmbeddingEncoder
+from stochastic_retrieval.encoding import SentenceEmbeddingEncoder, configure_dropout
 
 MODEL_CASES = [
     ("bge_base_en_v1_5.yaml", 768, "cls"),
@@ -42,6 +42,16 @@ def test_real_model_contract(
 
     assert encoder.dimension == dimension
     assert encoder.pooling == pooling
+    assert configure_dropout(
+        encoder.model,
+        stochastic=True,
+        scope="attention",
+    ) > 0
+    assert configure_dropout(
+        encoder.model,
+        stochastic=True,
+        scope="hidden",
+    ) > 0
 
     deterministic_path = tmp_path / f"{config_name}-deterministic.npy"
     stochastic_path = tmp_path / f"{config_name}-stochastic.npy"

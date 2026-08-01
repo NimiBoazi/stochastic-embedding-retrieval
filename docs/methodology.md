@@ -79,6 +79,19 @@ Primary dropout condition uses each checkpoint's trained probability. Ablations:
 Overridden probabilities are stress tests because changing dropout after training
 creates distribution shift.
 
+The scope/strength ablation sweep runs all four base models on SciFact with 16
+query samples per condition:
+
+1. all dropout at native probabilities
+2. attention-only at native probabilities
+3. hidden-only at native probabilities
+4. all dropout with probabilities 0.05, 0.10, and 0.20
+
+This is a development analysis, not six additional confirmatory hypotheses.
+Any condition selected for later use must be frozen and evaluated unchanged on
+at least one confirmatory dataset. The deterministic baseline is included in
+every condition, but `p=0` is not treated as stochastic dropout.
+
 Aggregation:
 
 - normalized centroid

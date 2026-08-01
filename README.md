@@ -96,6 +96,16 @@ The secondary `configs/sweeps/bge_scaling.yaml` adds BGE-large on SciFact and
 FiQA. Its BGE-base comparison values come from the core sweep, avoiding duplicate
 inference.
 
+Preview the 24-condition SciFact dropout ablation:
+
+```bash
+stochastic-retrieval sweep configs/sweeps/dropout_ablations_scifact.yaml
+```
+
+It crosses four base models with native all/attention/hidden scopes and all-scope
+probabilities 0.05, 0.10, and 0.20. These are development analyses; any selected
+condition must be frozen before confirmatory evaluation.
+
 Real-checkpoint contract tests are opt-in because they download all five models:
 
 ```bash
