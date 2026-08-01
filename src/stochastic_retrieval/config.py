@@ -45,8 +45,10 @@ class ExperimentConfig:
     ranking_write_query_batch_size: int = 256
     trim_fraction: float = 0.20
     ranking_medoid_depth: int = 100
+    majority_vote_depth: int = 100
     variance_penalty_lambda: float = 1.0
     metric_cutoffs: tuple[int, ...] = (10, 100, 1000)
+    success_cutoffs: tuple[int, ...] = (1, 5, 10)
     methods: tuple[str, ...] = (
         "deterministic",
         "mean_embedding",
@@ -113,7 +115,7 @@ def load_config(path: str | Path) -> ProjectConfig:
     model = ModelConfig(**_resolve_section(raw, "model", config_path))
     dataset = DatasetConfig(**_resolve_section(raw, "dataset", config_path))
     experiment_raw = _require_mapping(raw.get("experiment"), "experiment")
-    for key in ("metric_cutoffs", "methods"):
+    for key in ("metric_cutoffs", "success_cutoffs", "methods"):
         if key in experiment_raw:
             experiment_raw[key] = tuple(experiment_raw[key])
     experiment = ExperimentConfig(**experiment_raw)
@@ -149,7 +151,7 @@ def load_sweep(path: str | Path) -> list[ProjectConfig]:
 
     experiment_template = _require_mapping(raw.get("experiment"), "experiment").copy()
     experiment_template.pop("name", None)
-    for key in ("metric_cutoffs", "methods"):
+    for key in ("metric_cutoffs", "success_cutoffs", "methods"):
         if key in experiment_template:
             experiment_template[key] = tuple(experiment_template[key])
 

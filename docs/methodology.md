@@ -10,13 +10,38 @@ secondary endpoints.
 Oracle best-of-N is an explanatory upper bound. It must not be included when
 claiming deployable performance.
 
+## Metrics
+
+All ranking metrics except MRR and `qrels_overlap` are computed with pytrec_eval
+(trec_eval semantics): nDCG uses linear gain and MAP@k normalizes by the total
+number of relevant documents, matching the official BEIR evaluation. Runs are
+submitted to trec_eval with strictly decreasing rank-derived scores because
+trec_eval re-sorts by score and breaks ties by document identifier; this
+preserves each aggregation method's exact ordering. MRR@k and `qrels_overlap@k`
+have no trec_eval equivalent and are computed directly. Oracle best-of-N
+selection uses the same linear-gain nDCG@10 as the reported endpoint.
+
+success@{1,5,10} (whether any relevant document appears in the top k) is
+reported as a shallow secondary diagnostic. It is preferred over recall at
+shallow depths because it stays interpretable on multi-relevance datasets, but
+it is a per-query binary outcome with high variance, so it is descriptive only
+and never a confirmatory endpoint.
+
+Model checkpoints are pinned to explicit Hugging Face commit hashes in the
+model configurations, and every run manifest records both the requested and
+the resolved commit so results cannot silently drift with upstream updates.
+
 ## Stage 1 — pipeline validation
 
 Use BGE-base-en-v1.5 on SciFact:
 
 - Verify a credible deterministic baseline.
-- Verify deterministic reruns are identical.
-- Confirm stochastic samples differ when dropout is active.
+- Verify deterministic reruns are identical. Every run re-encodes a probe batch
+  of queries deterministically (also on cache hits) and fails if the result
+  diverges from the stored embeddings beyond floating-point noise.
+- Confirm stochastic samples differ when dropout is active. All sample pairs
+  are checked for distinctness, and each sample is checked against the
+  deterministic embeddings.
 - Confirm query ordering and qrels alignment.
 - Compare mean-score and mean-embedding rankings; explain expected equivalence.
 - Inspect at least 20 oracle wins and 20 oracle failures manually.
@@ -79,6 +104,24 @@ Primary dropout condition uses each checkpoint's trained probability. Ablations:
 Overridden probabilities are stress tests because changing dropout after training
 creates distribution shift.
 
+Dropout scope definitions: "attention" means attention-probability dropout (the
+dropout applied to attention weights); "hidden" means every other dropout
+(attention-output, feed-forward, and embedding dropout). Modern HuggingFace
+encoders apply attention-probability dropout functionally, gated by the
+attention module's training flag rather than by an `nn.Dropout` submodule, so
+the pipeline flips the gating attention modules into train mode. BERT-family
+models (BGE, E5, Contriever) hold the probability on an `nn.Dropout` child at
+`attention.self.dropout`; T5-family models (GTR) store it as a float attribute
+on the attention module, which means probability overrides for GTR adjust that
+float directly.
+
+Models are always loaded with the eager attention implementation. Fused SDPA
+kernels apply attention-probability dropout inside the kernel and some backends
+(notably PyTorch MPS) silently ignore it, which would turn the attention
+condition into a no-op. As a guard, every run encodes a probe sentence twice
+under each constituent dropout scope and fails if the outputs are identical,
+so a dead dropout pathway can never silently degenerate a stochastic condition.
+
 The scope/strength ablation sweep runs all four base models on SciFact with 16
 query samples per condition:
 
@@ -98,14 +141,18 @@ Aggregation:
 - embedding medoid: the sampled embedding with highest mean cosine agreement
 - 20% trimmed centroid: average after removing samples furthest from the medoid
 - reciprocal-rank fusion with offset 60
-- top-k voting with rank-based tie breaking
+- majority vote: top-100 voting, with ties (including unvoted documents) broken
+  by the reciprocal-rank-fusion sum over the full-depth lists so fused rankings
+  stay full length and deep cutoffs remain comparable
 - ranking medoid using mean pairwise Jaccard agreement at depth 100
 - maximum sampled score
-- variance-penalized score: sample mean minus one sample standard deviation
+- variance-penalized score: sample mean minus one Bessel-corrected (ddof=1)
+  sample standard deviation
 - oracle best-of-N selected by per-query nDCG@10
 
-The trimmed fraction (0.20), ranking-medoid depth (100), and variance penalty
-lambda (1.0) are fixed defaults and recorded in every run manifest. Maximum and
+The trimmed fraction (0.20), ranking-medoid depth (100), majority-vote depth
+(100), and variance penalty lambda (1.0) are fixed defaults and recorded in
+every run manifest. Maximum and
 variance-penalized scoring rerank the union of documents appearing in sampled
 top-k lists; they are candidate-based rather than exhaustive corpus-wide scoring.
 Maximum score is interpreted cautiously because its null distribution increases

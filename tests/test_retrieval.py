@@ -70,6 +70,22 @@ def test_rank_fusion_prefers_repeated_documents() -> None:
     assert set(vote.indices[0, :2]) == {1, 2}
 
 
+def test_majority_vote_counts_votes_at_depth_and_breaks_ties_by_rrf() -> None:
+    scores = np.array([[0.9, 0.8, 0.7]], dtype=np.float32)
+    rankings = [
+        Rankings(np.array([[1, 9, 8]]), scores),
+        Rankings(np.array([[2, 9, 8]]), scores),
+        Rankings(np.array([[2, 9, 8]]), scores),
+    ]
+
+    result = majority_vote(rankings, k=4, depth=1)
+
+    # Document 2 has two top-1 votes, document 1 has one; documents 9 and 8
+    # have no votes at depth 1 and are ordered by their full-list RRF sums,
+    # even though document 9 has the highest RRF sum overall.
+    np.testing.assert_array_equal(result.indices, [[2, 1, 9, 8]])
+
+
 def test_reusable_numpy_retriever_handles_multiple_query_sets() -> None:
     corpus = np.eye(2, dtype=np.float32)
     retriever = DenseRetriever(corpus, k=1, backend="numpy")

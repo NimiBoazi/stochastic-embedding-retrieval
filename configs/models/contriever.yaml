@@ -1,5 +1,5 @@
 name: facebook/contriever
-revision: null  # Pin a Hugging Face commit before final experiments.
+revision: 2bd46a25019aeea091fd42d1f0fd4801675cf699
 query_prefix: ""
 document_prefix: ""
 pooling: mean

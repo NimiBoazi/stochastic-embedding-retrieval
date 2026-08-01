@@ -5,6 +5,7 @@ from collections.abc import Iterator
 
 import numpy as np
 import pandas as pd
+import pytrec_eval
 
 from stochastic_retrieval.retrieval import Rankings
 
@@ -66,16 +67,40 @@ def evaluate_rankings(
     document_ids: list[str],
     qrels: dict[str, dict[str, int]],
     cutoffs: tuple[int, ...],
+    success_cutoffs: tuple[int, ...] = (),
 ) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
+    """Evaluate one ranking with pytrec_eval (trec_eval semantics).
+
+    nDCG uses linear gain and MAP@k normalizes by the total number of relevant
+    documents, matching the official BEIR evaluation. success@k (any relevant
+    document within the top k) is reported at `success_cutoffs` as a shallow
+    secondary diagnostic. MRR@k and qrels_overlap@k have no trec_eval
+    equivalent and are computed directly. trec_eval re-sorts runs by
+    (score desc, doc_id desc), so the run is submitted with strictly decreasing
+    rank-derived scores to preserve the aggregation's exact ordering.
+    """
+    retrieved_lists: dict[str, list[str]] = {}
+    run: dict[str, dict[str, float]] = {}
+    depth = rankings.indices.shape[1]
     for query_index, query_id in enumerate(query_ids):
         retrieved = [
             document_ids[int(index)]
             for index in rankings.indices[query_index]
             if index >= 0
         ]
+        retrieved_lists[query_id] = retrieved
+        run[query_id] = {
+            document_id: float(depth - position)
+            for position, document_id in enumerate(retrieved)
+        }
+    trec_scores = _trec_eval_scores(run, qrels, cutoffs, success_cutoffs)
+
+    rows: list[dict[str, object]] = []
+    for query_id in query_ids:
+        retrieved = retrieved_lists[query_id]
         relevance = qrels.get(query_id, {})
         relevant_count = sum(value > 0 for value in relevance.values())
+        query_scores = trec_scores.get(query_id, {})
         row: dict[str, object] = {
             "method": method,
             "query_id": query_id,
@@ -90,9 +115,9 @@ def evaluate_rankings(
             ),
         }
         for cutoff in cutoffs:
-            row[f"ndcg@{cutoff}"] = ndcg(retrieved, relevance, cutoff)
-            row[f"recall@{cutoff}"] = recall(retrieved, relevance, cutoff)
-            row[f"map@{cutoff}"] = average_precision(retrieved, relevance, cutoff)
+            row[f"ndcg@{cutoff}"] = query_scores.get(f"ndcg_cut_{cutoff}", 0.0)
+            row[f"recall@{cutoff}"] = query_scores.get(f"recall_{cutoff}", 0.0)
+            row[f"map@{cutoff}"] = query_scores.get(f"map_cut_{cutoff}", 0.0)
             row[f"mrr@{cutoff}"] = reciprocal_rank(retrieved, relevance, cutoff)
             considered = retrieved[:cutoff]
             row[f"qrels_overlap@{cutoff}"] = (
@@ -101,11 +126,40 @@ def evaluate_rankings(
                 if considered
                 else 0.0
             )
+        for cutoff in success_cutoffs:
+            row[f"success@{cutoff}"] = query_scores.get(f"success_{cutoff}", 0.0)
         rows.append(row)
     return pd.DataFrame(rows)
 
 
+def _trec_eval_scores(
+    run: dict[str, dict[str, float]],
+    qrels: dict[str, dict[str, int]],
+    cutoffs: tuple[int, ...],
+    success_cutoffs: tuple[int, ...] = (),
+) -> dict[str, dict[str, float]]:
+    # pytrec_eval silently drops queries without judgments; evaluate only judged
+    # queries and let callers fill zeros so query alignment is preserved.
+    judged = {query_id: relevance for query_id, relevance in qrels.items() if relevance}
+    if not judged:
+        return {}
+    cutoff_spec = ",".join(str(cutoff) for cutoff in cutoffs)
+    measures = {
+        f"ndcg_cut.{cutoff_spec}",
+        f"recall.{cutoff_spec}",
+        f"map_cut.{cutoff_spec}",
+    }
+    if success_cutoffs:
+        success_spec = ",".join(str(cutoff) for cutoff in success_cutoffs)
+        measures.add(f"success.{success_spec}")
+    evaluator = pytrec_eval.RelevanceEvaluator(judged, measures)
+    return evaluator.evaluate(
+        {query_id: documents for query_id, documents in run.items() if query_id in judged}
+    )
+
+
 def ndcg(retrieved: list[str], relevance: dict[str, int], k: int) -> float:
+    """Linear-gain nDCG@k, matching trec_eval's ndcg_cut (used for oracle selection)."""
     gains = [relevance.get(document_id, 0) for document_id in retrieved[:k]]
     ideal = sorted((value for value in relevance.values() if value > 0), reverse=True)[:k]
     denominator = _dcg(ideal)
@@ -114,31 +168,9 @@ def ndcg(retrieved: list[str], relevance: dict[str, int], k: int) -> float:
 
 def _dcg(relevance: list[int]) -> float:
     return sum(
-        (2**grade - 1) / math.log2(rank + 1)
+        grade / math.log2(rank + 1)
         for rank, grade in enumerate(relevance, start=1)
     )
-
-
-def recall(retrieved: list[str], relevance: dict[str, int], k: int) -> float:
-    relevant = {document_id for document_id, value in relevance.items() if value > 0}
-    if not relevant:
-        return 0.0
-    return len(relevant.intersection(retrieved[:k])) / len(relevant)
-
-
-def average_precision(
-    retrieved: list[str], relevance: dict[str, int], k: int
-) -> float:
-    relevant = {document_id for document_id, value in relevance.items() if value > 0}
-    if not relevant:
-        return 0.0
-    hits = 0
-    score = 0.0
-    for rank, document_id in enumerate(retrieved[:k], start=1):
-        if document_id in relevant:
-            hits += 1
-            score += hits / rank
-    return score / min(len(relevant), k)
 
 
 def reciprocal_rank(

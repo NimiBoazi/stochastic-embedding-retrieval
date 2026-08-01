@@ -36,13 +36,87 @@ def set_reproducible_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+class _DropoutSite:
+    """One dropout application point, with the module whose training flag gates it.
+
+    Modern HuggingFace encoders apply dropout in two distinct ways:
+
+    - Hidden-state dropout (attention-output, feed-forward, embeddings) calls an
+      ``nn.Dropout`` module directly, so that module's own training flag controls it.
+    - Attention-probability dropout is applied functionally inside the attention
+      forward, gated by the *attention module's* training flag. BERT-family models
+      keep an ``nn.Dropout`` child at ``...attention.self.dropout`` purely as a
+      probability holder; T5-family models store the probability as a plain float
+      on the attention module and have no ``nn.Dropout`` child at all.
+
+    Setting only the ``nn.Dropout`` child to train mode therefore silently
+    disables attention-probability dropout; the gate module must be flipped.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        gate: nn.Module,
+        holder: nn.Dropout | None,
+        is_attention_probability: bool,
+    ) -> None:
+        self.name = name
+        self.gate = gate
+        self.holder = holder
+        self.is_attention_probability = is_attention_probability
+
+    @property
+    def probability(self) -> float:
+        if self.holder is not None:
+            return float(self.holder.p)
+        return float(self.gate.dropout)
+
+    def set_probability(self, probability: float) -> None:
+        if self.holder is not None:
+            self.holder.p = probability
+        else:
+            self.gate.dropout = probability
+
+    def enable(self) -> None:
+        self.gate.train()
+
+
+def _dropout_sites(model: nn.Module) -> list[_DropoutSite]:
+    modules = dict(model.named_modules())
+    sites: list[_DropoutSite] = []
+    for name, module in modules.items():
+        if isinstance(module, nn.Dropout):
+            if name.endswith("attention.self.dropout"):
+                # BERT-family attention-probability dropout: gated by the parent
+                # self-attention module, probability held by this nn.Dropout.
+                parent = modules[name.rsplit(".", 1)[0]]
+                sites.append(_DropoutSite(name, parent, module, True))
+            else:
+                sites.append(_DropoutSite(name, module, module, False))
+        elif type(module).__name__.endswith("Attention") and isinstance(
+            getattr(module, "dropout", None), float
+        ):
+            # T5-family attention-probability dropout: applied functionally with a
+            # float probability attribute; no nn.Dropout child exists.
+            sites.append(_DropoutSite(name, module, None, True))
+    return sites
+
+
+def _site_selected(site: _DropoutSite, scope: str) -> bool:
+    return (
+        scope == "all"
+        or (scope == "attention" and site.is_attention_probability)
+        or (scope == "hidden" and not site.is_attention_probability)
+    )
+
+
 def configure_dropout(
     model: nn.Module,
     stochastic: bool,
     scope: str = "all",
     probability: float | None = None,
 ) -> int:
-    """Enable only selected dropout modules while keeping the model otherwise in eval mode."""
+    """Enable only selected dropout sites while keeping the model otherwise in eval mode."""
     valid_scopes = {"all", "attention", "hidden"}
     if scope not in valid_scopes:
         raise ValueError(f"dropout_scope must be one of {sorted(valid_scopes)}")
@@ -52,39 +126,29 @@ def configure_dropout(
         return 0
 
     enabled = 0
-    for name, module in model.named_modules():
-        if not isinstance(module, nn.Dropout):
+    for site in _dropout_sites(model):
+        if not _site_selected(site, scope):
             continue
-        if _dropout_selected(name, scope):
-            if probability is not None:
-                if not 0 <= probability < 1:
-                    raise ValueError("dropout_probability must be in [0, 1)")
-                module.p = probability
-            module.train()
-            enabled += int(module.p > 0)
+        if probability is not None:
+            if not 0 <= probability < 1:
+                raise ValueError("dropout_probability must be in [0, 1)")
+            site.set_probability(probability)
+        site.enable()
+        enabled += int(site.probability > 0)
     if enabled == 0:
         raise RuntimeError(
-            f"No positive-probability dropout modules matched scope '{scope}'"
+            f"No positive-probability dropout sites matched scope '{scope}'"
         )
     return enabled
 
 
 def dropout_probability_summary(model: nn.Module, scope: str) -> dict[str, int]:
     summary: dict[str, int] = {}
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Dropout) and _dropout_selected(name, scope):
-            probability = f"{module.p:.6g}"
+    for site in _dropout_sites(model):
+        if _site_selected(site, scope):
+            probability = f"{site.probability:.6g}"
             summary[probability] = summary.get(probability, 0) + 1
     return summary
-
-
-def _dropout_selected(name: str, scope: str) -> bool:
-    is_attention = "attention" in name.lower() or "attn" in name.lower()
-    return (
-        scope == "all"
-        or (scope == "attention" and is_attention)
-        or (scope == "hidden" and not is_attention)
-    )
 
 
 def configure_pooling(model: SentenceTransformer, mode: str) -> str:
@@ -126,10 +190,15 @@ class SentenceEmbeddingEncoder:
     def __init__(self, config: ModelConfig, device: str) -> None:
         self.config = config
         self.device = resolve_device(device)
+        # Eager attention is required for stochastic encoding: SDPA applies
+        # attention-probability dropout inside fused kernels, and some backends
+        # (notably MPS) silently ignore dropout_p there. The eager path uses a
+        # plain elementwise dropout that works on every backend.
         self.model = SentenceTransformer(
             config.name,
             revision=config.revision,
             device=self.device,
+            model_kwargs={"attn_implementation": "eager"},
         )
         self.model.max_seq_length = config.max_length
         self.pooling = configure_pooling(self.model, config.pooling)
@@ -202,15 +271,84 @@ class SentenceEmbeddingEncoder:
             "pooling": self.pooling,
         }
 
-    def _write_batch(
+    @property
+    def attention_implementation(self) -> str | None:
+        try:
+            return self.model[0].auto_model.config._attn_implementation
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return None
+
+    @property
+    def resolved_revision(self) -> str | None:
+        """The Hugging Face commit hash actually loaded, for provenance."""
+        try:
+            return self.model[0].auto_model.config._commit_hash
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return None
+
+    def verify_dropout_effect(
         self,
-        batch: list[TextRecord],
+        probe_text: str = "Dropout effect verification probe sentence.",
+    ) -> dict[str, bool]:
+        """Fail loudly if any configured dropout scope does not perturb outputs.
+
+        Guards against silent no-ops such as fused attention kernels ignoring
+        dropout on some backends, or dropout gates that were never flipped.
+        The 'all' scope is probed one constituent scope at a time so a dead
+        attention pathway cannot hide behind an active hidden pathway.
+        """
+        scopes = (
+            ["attention", "hidden"]
+            if self.config.dropout_scope == "all"
+            else [self.config.dropout_scope]
+        )
+        report: dict[str, bool] = {}
+        for scope in scopes:
+            configure_dropout(
+                self.model,
+                stochastic=True,
+                scope=scope,
+                probability=self.config.dropout_probability,
+            )
+            torch.manual_seed(0)
+            first = self._encode_texts([probe_text])
+            torch.manual_seed(1)
+            second = self._encode_texts([probe_text])
+            if np.array_equal(first, second):
+                raise RuntimeError(
+                    f"Dropout scope '{scope}' does not perturb encoder outputs on "
+                    f"device '{self.device}' (attention implementation "
+                    f"{self.attention_implementation!r}); the stochastic condition "
+                    "would silently degenerate"
+                )
+            report[scope] = True
+        configure_dropout(self.model, stochastic=False)
+        return report
+
+    def encode_records(
+        self,
+        records: list[TextRecord],
         prefix: str,
-        destination: np.memmap,
-        ids_file: object,
-        start: int,
-    ) -> int:
-        texts = [f"{prefix}{record.text}" for record in batch]
+        seed: int,
+        stochastic: bool,
+    ) -> np.ndarray:
+        """Encode a small in-memory batch under the same regime as encode_to_file."""
+        set_reproducible_seed(seed)
+        configure_dropout(
+            self.model,
+            stochastic=stochastic,
+            scope=self.config.dropout_scope,
+            probability=self.config.dropout_probability,
+        )
+        chunks = [
+            self._encode_texts(
+                [f"{prefix}{record.text}" for record in records[start : start + self.config.batch_size]]
+            )
+            for start in range(0, len(records), self.config.batch_size)
+        ]
+        return np.concatenate(chunks, axis=0)
+
+    def _encode_texts(self, texts: list[str]) -> np.ndarray:
         features = self.model.tokenize(texts)
         features = {
             key: value.to(self.device) if isinstance(value, torch.Tensor) else value
@@ -221,10 +359,20 @@ class SentenceEmbeddingEncoder:
             if self.config.normalize:
                 output = torch.nn.functional.normalize(output, p=2, dim=1)
         if not torch.isfinite(output).all():
-            raise RuntimeError(f"Non-finite embedding detected near item {start}")
+            raise RuntimeError("Non-finite embedding detected")
         if torch.linalg.vector_norm(output, dim=1).min().item() <= 1e-8:
-            raise RuntimeError(f"Near-zero embedding detected near item {start}")
-        array = output.detach().cpu().float().numpy()
+            raise RuntimeError("Near-zero embedding detected")
+        return output.detach().cpu().float().numpy()
+
+    def _write_batch(
+        self,
+        batch: list[TextRecord],
+        prefix: str,
+        destination: np.memmap,
+        ids_file: object,
+        start: int,
+    ) -> int:
+        array = self._encode_texts([f"{prefix}{record.text}" for record in batch])
         stop = start + len(batch)
         destination[start:stop] = array
         for record in batch:

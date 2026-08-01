@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterable
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +97,9 @@ def _execute_experiment(
         )
     if config.experiment.query_samples < 1:
         raise ValueError("query_samples must be at least 1")
-    if config.experiment.retrieval_k < max(config.experiment.metric_cutoffs):
+    if config.experiment.retrieval_k < max(
+        (*config.experiment.metric_cutoffs, *config.experiment.success_cutoffs)
+    ):
         raise ValueError("retrieval_k must cover the largest metric cutoff")
 
     with reporter.stage("load_dataset"):
@@ -113,7 +116,11 @@ def _execute_experiment(
         device=encoder.device,
         embedding_dimension=encoder.dimension,
         pooling=encoder.pooling,
+        attention_implementation=encoder.attention_implementation,
+        resolved_revision=encoder.resolved_revision,
     )
+    dropout_effect = encoder.verify_dropout_effect()
+    reporter.emit("dropout_effect_validated", scopes=dropout_effect)
 
     with reporter.stage("encode_and_validate_embeddings"):
         document_report = _encode_if_missing(
@@ -182,6 +189,13 @@ def _execute_experiment(
         stochastic_queries,
     )
     reporter.emit("stochasticity_validated", **stochasticity)
+    determinism = _verify_deterministic_reencode(
+        encoder,
+        dataset,
+        config,
+        deterministic_queries,
+    )
+    reporter.emit("deterministic_reencode_validated", **determinism)
 
     requested = set(config.experiment.methods)
     unknown = requested.difference(
@@ -255,7 +269,9 @@ def _execute_experiment(
             )
         if "majority_vote" in requested:
             rankings["majority_vote"] = majority_vote(
-                sample_rankings, config.experiment.retrieval_k
+                sample_rankings,
+                config.experiment.retrieval_k,
+                depth=config.experiment.majority_vote_depth,
             )
         if "ranking_medoid" in requested:
             rankings["ranking_medoid"] = ranking_medoid(
@@ -303,6 +319,7 @@ def _execute_experiment(
                     document_ids,
                     qrels,
                     config.experiment.metric_cutoffs,
+                    success_cutoffs=config.experiment.success_cutoffs,
                 )
                 for method, ranking in selected_rankings.items()
             ],
@@ -368,10 +385,17 @@ def _execute_experiment(
                     "documents": len(document_ids),
                     "qrels_queries": len(qrels),
                 },
+                "model_provenance": {
+                    "requested_revision": config.model.revision,
+                    "resolved_revision": encoder.resolved_revision,
+                    "attention_implementation": encoder.attention_implementation,
+                },
                 "embedding_validation": {
                     "documents": document_report,
                     "queries_deterministic": deterministic_report,
                     "stochasticity": stochasticity,
+                    "deterministic_reencode": determinism,
+                    "dropout_effect_scopes": dropout_effect,
                 },
                 "methodology_notes": {
                     "oracle_best_of_n": "Uses qrels and is an oracle upper bound.",
@@ -450,20 +474,61 @@ def _validate_stochasticity(
         raise RuntimeError(
             "Stochastic and deterministic query embedding shapes are inconsistent"
         )
-    if np.array_equal(stochastic[0], deterministic):
-        raise RuntimeError(
-            "Stochastic query embeddings are identical to deterministic embeddings"
-        )
-    if len(stochastic) > 1 and all(
-        np.array_equal(stochastic[0], sample) for sample in stochastic[1:]
-    ):
-        raise RuntimeError("All stochastic query samples are identical")
+    for sample_index, sample in enumerate(stochastic):
+        if np.array_equal(sample, deterministic):
+            raise RuntimeError(
+                f"Stochastic query sample {sample_index} is identical to the "
+                "deterministic embeddings"
+            )
+    for left in range(len(stochastic)):
+        for right in range(left + 1, len(stochastic)):
+            if np.array_equal(stochastic[left], stochastic[right]):
+                raise RuntimeError(
+                    f"Stochastic query samples {left} and {right} are identical"
+                )
     return {
         "samples": len(stochastic),
         "mean_absolute_difference_from_deterministic": float(
             np.abs(stochastic - deterministic[None, :, :]).mean()
         ),
         "mean_coordinate_std": float(stochastic.std(axis=0).mean()),
+    }
+
+
+def _verify_deterministic_reencode(
+    encoder: SentenceEmbeddingEncoder,
+    dataset: IRDatasetAdapter,
+    config: ProjectConfig,
+    stored: np.ndarray,
+    tolerance: float = 1e-6,
+) -> dict[str, float | int | bool]:
+    """Re-encode a probe batch of queries and compare with the stored embeddings.
+
+    This runs on every invocation, including cache hits, so deterministic
+    reproducibility is verified even when the embedding files are reused. Any
+    difference above `tolerance` indicates state leakage (for example dropout
+    left active) rather than benign floating-point noise.
+    """
+    probe_count = min(config.model.batch_size, len(stored))
+    records = list(islice(dataset.iter_queries(), probe_count))
+    reencoded = encoder.encode_records(
+        records,
+        prefix=config.model.query_prefix,
+        seed=config.experiment.seed,
+        stochastic=False,
+    )
+    reference = np.asarray(stored[:probe_count])
+    max_difference = float(np.abs(reencoded - reference).max())
+    if max_difference > tolerance:
+        raise RuntimeError(
+            "Deterministic re-encoding diverged from stored embeddings "
+            f"(max difference {max_difference:.3e}); the deterministic pathway "
+            "is not reproducible"
+        )
+    return {
+        "probe_queries": probe_count,
+        "bitwise_identical": bool(np.array_equal(reencoded, reference)),
+        "max_absolute_difference": max_difference,
     }
 
 

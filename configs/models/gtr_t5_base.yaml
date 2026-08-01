@@ -1,5 +1,5 @@
 name: sentence-transformers/gtr-t5-base
-revision: null  # Pin a Hugging Face commit before final experiments.
+revision: 9801579ce813fb37541e6098dffd17959fffcd6e
 query_prefix: ""
 document_prefix: ""
 pooling: mean

@@ -1,5 +1,5 @@
 name: intfloat/e5-base-v2
-revision: null
+revision: f52bf8ec8c7124536f0efb74aca902b2995e5bcd
 query_prefix: "query: "
 document_prefix: "passage: "
 pooling: mean

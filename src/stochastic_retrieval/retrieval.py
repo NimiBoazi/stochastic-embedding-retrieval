@@ -250,9 +250,52 @@ def reciprocal_rank_fusion(rankings: list[Rankings], k: int, offset: int = 60) -
     return _rank_fusion(rankings, k, lambda rank: 1.0 / (offset + rank))
 
 
-def majority_vote(rankings: list[Rankings], k: int) -> Rankings:
-    depth = rankings[0].indices.shape[1]
-    return _rank_fusion(rankings, k, lambda rank: 1.0 + (depth - rank) * 1e-9)
+def majority_vote(
+    rankings: list[Rankings],
+    k: int,
+    depth: int = 100,
+    offset: int = 60,
+) -> Rankings:
+    """Top-`depth` voting with reciprocal-rank tie breaking over the full lists.
+
+    The primary signal is the integer number of sampled rankings that place a
+    document within `depth`. Ties (including documents with zero votes) are
+    broken by the reciprocal-rank-fusion sum over the full-depth lists, so the
+    fused ranking stays full length and deep cutoffs remain comparable with the
+    other methods. Remaining exact ties fall back to the document index.
+    """
+    if not rankings:
+        raise ValueError("At least one ranking is required")
+    if depth < 1:
+        raise ValueError("majority_vote_depth must be positive")
+    query_count = rankings[0].indices.shape[0]
+    output_indices = np.full((query_count, k), -1, dtype=np.int64)
+    output_scores = np.full((query_count, k), -np.inf, dtype=np.float32)
+    for query_index in range(query_count):
+        votes: dict[int, int] = {}
+        fused: dict[int, float] = {}
+        for ranking in rankings:
+            for rank, document_index in enumerate(
+                ranking.indices[query_index], start=1
+            ):
+                document_index = int(document_index)
+                if document_index < 0:
+                    continue
+                if rank <= depth:
+                    votes[document_index] = votes.get(document_index, 0) + 1
+                fused[document_index] = fused.get(document_index, 0.0) + 1.0 / (
+                    offset + rank
+                )
+        ordered = sorted(
+            fused.items(),
+            key=lambda item: (-votes.get(item[0], 0), -item[1], item[0]),
+        )[:k]
+        # RRF sums are far below 1000, so the tiers cannot collide in the score.
+        output_indices[query_index, : len(ordered)] = [item[0] for item in ordered]
+        output_scores[query_index, : len(ordered)] = [
+            votes.get(item[0], 0) * 1000.0 + item[1] for item in ordered
+        ]
+    return Rankings(output_indices, output_scores)
 
 
 def ranking_medoid(rankings: list[Rankings], depth: int = 100) -> Rankings:
@@ -305,13 +348,19 @@ def variance_penalized_rerank(
 ) -> Rankings:
     if penalty < 0:
         raise ValueError("variance_penalty_lambda must be non-negative")
+
+    def mean_minus_std(scores: np.ndarray) -> np.ndarray:
+        # Bessel-corrected sample standard deviation; undefined for one sample.
+        if len(scores) < 2:
+            return scores.mean(axis=0)
+        return scores.mean(axis=0) - penalty * scores.std(axis=0, ddof=1)
+
     return _sample_score_rerank(
         samples,
         corpus,
         sample_rankings,
         k,
-        score_function=lambda scores: scores.mean(axis=0)
-        - penalty * scores.std(axis=0),
+        score_function=mean_minus_std,
     )
 
 
