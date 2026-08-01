@@ -1,11 +1,11 @@
-name: BAAI/bge-base-en-v1.5
+name: BAAI/bge-large-en-v1.5
 revision: null  # Pin a Hugging Face commit before final experiments.
 query_prefix: "Represent this sentence for searching relevant passages: "
 document_prefix: ""
 pooling: cls
-expected_dimension: 768
-batch_size: 32
+expected_dimension: 1024
+batch_size: 16
 max_length: 512
 normalize: true
 dropout_scope: all
-dropout_probability: null  # Use the model's trained dropout rate.
+dropout_probability: null

@@ -2,6 +2,8 @@ name: intfloat/e5-base-v2
 revision: null
 query_prefix: "query: "
 document_prefix: "passage: "
+pooling: mean
+expected_dimension: 768
 batch_size: 32
 max_length: 512
 normalize: true

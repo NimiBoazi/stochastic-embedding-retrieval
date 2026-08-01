@@ -15,6 +15,23 @@ that aggregation and analysis can be repeated without another model inference ru
 The oracle method deliberately uses qrels. It is an academic diagnostic and is
 always labeled separately from deployable methods.
 
+## Pre-registered model design
+
+The base-scale cross-family comparison uses:
+
+- `BAAI/bge-base-en-v1.5`
+- `intfloat/e5-base-v2`
+- `facebook/contriever`
+- `sentence-transformers/gtr-t5-base`
+
+`BAAI/bge-large-en-v1.5` is a separate, secondary comparison with BGE-base. It
+tests two sizes within one model family and is not treated as evidence of a
+general scaling law.
+
+Model files explicitly declare query/document prefixes, pooling, expected output
+dimension, and native dropout behavior. Experiment YAML can reference reusable
+model and dataset files through `model_config` and `dataset_config`.
+
 ## Implemented pilot
 
 - Streaming BEIR dataset access through `ir_datasets`.
@@ -59,6 +76,15 @@ stochastic-retrieval run configs/experiments/scifact_bge_pilot.yaml
 
 The first invocation downloads the BEIR collection and Hugging Face model.
 
+The remaining SciFact screening configurations are in `configs/experiments/`.
+Run each independently so that failures and artifacts remain isolated by model.
+
+Real-checkpoint contract tests are opt-in because they download all five models:
+
+```bash
+RUN_MODEL_CONTRACT_TESTS=1 pytest tests/test_model_contracts.py
+```
+
 ## Outputs
 
 Each configuration receives a deterministic fingerprint:
@@ -92,7 +118,7 @@ Blob storage for long-term retention.
 The runner prints and immediately persists lightweight stage events rather than
 using a training-oriented dashboard. It reports stage duration, item counts,
 device, embedding dimension, enabled dropout-module count, cached artifacts, and
-the final aggregate metrics.
+the native dropout probabilities, configured pooling, and final aggregate metrics.
 
 Every embedding artifact is checked for its expected shape, non-finite values,
 and near-zero norms. Stochastic query banks must differ from both deterministic

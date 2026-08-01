@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ from stochastic_retrieval.data import IRDatasetAdapter, TextRecord
 from stochastic_retrieval.encoding import (
     SentenceEmbeddingEncoder,
     configure_dropout,
+    dropout_probability_summary,
     inspect_embedding_file,
 )
 from stochastic_retrieval.evaluation import (
@@ -103,6 +105,7 @@ def _execute_experiment(
         "model_loaded",
         device=encoder.device,
         embedding_dimension=encoder.dimension,
+        pooling=encoder.pooling,
     )
 
     with reporter.stage("encode_and_validate_embeddings"):
@@ -329,7 +332,7 @@ def _encode_if_missing(
     seed: int,
     stochastic: bool,
     description: str,
-) -> dict[str, float | int | bool]:
+) -> dict[str, Any]:
     if output_path.exists() and ids_path.exists():
         enabled = configure_dropout(
             encoder.model,
@@ -343,6 +346,10 @@ def _encode_if_missing(
             "seed": seed,
             "stochastic": stochastic,
             "enabled_dropout_modules": enabled,
+            "dropout_probabilities": dropout_probability_summary(
+                encoder.model, encoder.config.dropout_scope
+            ),
+            "pooling": encoder.pooling,
         }
     return encoder.encode_to_file(
         records=records,

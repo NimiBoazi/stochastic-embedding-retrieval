@@ -7,6 +7,8 @@ model:
   revision: null
   query_prefix: "Represent this sentence for searching relevant passages: "
   document_prefix: ""
+  pooling: cls
+  expected_dimension: 768
   batch_size: 32
   max_length: 512
   normalize: true

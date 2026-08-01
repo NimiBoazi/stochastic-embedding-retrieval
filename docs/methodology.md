@@ -25,11 +25,26 @@ No broad conclusions should be drawn from this stage.
 
 ## Stage 2 — stochastic-query study
 
-Models:
+Pre-registered base-scale cross-family models:
 
 - BAAI/bge-base-en-v1.5
 - intfloat/e5-base-v2
-- Alibaba-NLP/gte-base-en-v1.5
+- facebook/contriever
+- sentence-transformers/gtr-t5-base
+
+These checkpoints are approximately base-sized, which limits model capacity as a
+confound while varying model family, training data, supervision, and pooling.
+Differences between them are interpreted as model-family effects, not as causal
+architecture effects, because their training data and objectives also differ.
+
+Secondary scaling comparison:
+
+- BAAI/bge-base-en-v1.5
+- BAAI/bge-large-en-v1.5
+
+This is a pre-specified two-size comparison within one family. It is not sufficient
+to claim a general scaling law. BGE-large is not part of the four-model
+cross-family confirmatory comparison.
 
 Datasets:
 
@@ -62,68 +77,3 @@ Aggregation:
 - agreement-weighted scoring
 - oracle best-of-N
 
-## Stage 3 — diversity and uncertainty
-
-Embedding-space diagnostics:
-
-- pairwise cosine dispersion
-- covariance trace and effective rank
-- deterministic-to-centroid displacement
-- per-dimension variance
-
-Ranking-space diagnostics:
-
-- top-k Jaccard overlap
-- rank-biased overlap
-- unique-document count
-- vote entropy
-
-Fit pre-specified regressions relating diversity to deterministic query difficulty,
-oracle headroom, and aggregation gain. Use a larger sample bank on a stratified
-query subset for covariance, entropy, and clustering analyses.
-
-## Stage 4 — stochastic documents
-
-Begin on SciFact, then scale only selected conditions. Compare:
-
-- deterministic documents
-- normalized mean stochastic document
-- document medoid
-- variance-aware scoring
-- rank fusion over stochastic document indexes
-
-For normalized stochastic vectors and dot products:
-
-`mean_ij(q_i · d_j) = mean(q_i) · mean(d_j)`.
-
-Therefore, all-pairs average scoring is not an independent nonlinear aggregation
-method. Renormalizing each document centroid can change rankings because the
-normalization factor varies by document.
-
-For large corpora, store float16 sample shards in object storage and maintain
-float32 streaming means/second moments. Record quantization as an experimental
-factor and audit its retrieval effect.
-
-## Statistical protocol
-
-- Freeze development queries before tuning.
-- Never select methods or hyperparameters on test qrels.
-- Report paired bootstrap 95% confidence intervals over queries.
-- Use paired randomization tests for final confirmatory comparisons.
-- Correct confirmatory p-values for the number of pre-registered comparisons.
-- Report mean effect, confidence interval, win/tie/loss counts, and per-query data.
-- Include all failed and null experimental conditions in the final results ledger.
-
-For oracle best-of-N, report both the oracle metric and selection frequency. Avoid
-evaluating a learned selector on the same qrels used to train it.
-
-## Reproducibility checklist
-
-- Pin model repository revisions.
-- Fingerprint dataset, preprocessing, and experiment configuration.
-- Record code revision, Python/package versions, hardware, dtype, and seeds.
-- Record batch size because random-number consumption may be batch dependent.
-- Persist sample embeddings and sample top-k rankings.
-- Separate raw artifacts from derived analyses.
-- Generate paper tables and plots from immutable Parquet outputs.
-- Reproduce a subset on a second machine or cloud provider.

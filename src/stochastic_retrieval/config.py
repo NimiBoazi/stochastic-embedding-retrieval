@@ -15,6 +15,8 @@ class ModelConfig:
     revision: str | None = None
     query_prefix: str = ""
     document_prefix: str = ""
+    pooling: str = "model_default"
+    expected_dimension: int | None = None
     batch_size: int = 32
     max_length: int = 512
     normalize: bool = True
@@ -72,15 +74,33 @@ def _require_mapping(value: Any, key: str) -> dict[str, Any]:
     return value
 
 
-def load_config(path: str | Path) -> ProjectConfig:
-    config_path = Path(path)
-    with config_path.open(encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError("The configuration root must be a mapping")
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as handle:
+        value = yaml.safe_load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"Configuration file must contain a mapping: {path}")
+    return value
 
-    model = ModelConfig(**_require_mapping(raw.get("model"), "model"))
-    dataset = DatasetConfig(**_require_mapping(raw.get("dataset"), "dataset"))
+
+def _resolve_section(raw: dict[str, Any], key: str, config_path: Path) -> dict[str, Any]:
+    inline = raw.get(key)
+    reference = raw.get(f"{key}_config")
+    if inline is not None and reference is not None:
+        raise ValueError(f"Use either '{key}' or '{key}_config', not both")
+    if inline is not None:
+        return _require_mapping(inline, key)
+    if not isinstance(reference, str):
+        raise ValueError(f"Missing configuration key '{key}' or '{key}_config'")
+    referenced_path = (config_path.parent / reference).resolve()
+    return _load_yaml_mapping(referenced_path)
+
+
+def load_config(path: str | Path) -> ProjectConfig:
+    config_path = Path(path).resolve()
+    raw = _load_yaml_mapping(config_path)
+
+    model = ModelConfig(**_resolve_section(raw, "model", config_path))
+    dataset = DatasetConfig(**_resolve_section(raw, "dataset", config_path))
     experiment_raw = _require_mapping(raw.get("experiment"), "experiment")
     for key in ("metric_cutoffs", "methods"):
         if key in experiment_raw:

@@ -1,0 +1,27 @@
+artifact_root: artifacts
+device: auto
+num_workers: 0
+model_config: ../models/bge_large_en_v1_5.yaml
+dataset_config: ../datasets/scifact.yaml
+
+experiment:
+  name: scifact-bge-large-scaling
+  seed: 42
+  query_samples: 8
+  document_samples: 1
+  retrieval_k: 1000
+  metric_cutoffs: [10, 100, 1000]
+  methods:
+    - deterministic
+    - mean_embedding
+    - mean_score
+    - medoid_embedding
+    - rrf
+    - majority_vote
+    - oracle_best_of_n
+  bootstrap_replicates: 2000
+
+tags:
+  stage: scaling_ablation
+  model_role: bge_large_size_comparison
+  primary_metric: ndcg@10

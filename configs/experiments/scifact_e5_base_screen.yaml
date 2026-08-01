@@ -1,0 +1,27 @@
+artifact_root: artifacts
+device: auto
+num_workers: 0
+model_config: ../models/e5_base_v2.yaml
+dataset_config: ../datasets/scifact.yaml
+
+experiment:
+  name: scifact-e5-base-screen
+  seed: 42
+  query_samples: 8
+  document_samples: 1
+  retrieval_k: 1000
+  metric_cutoffs: [10, 100, 1000]
+  methods:
+    - deterministic
+    - mean_embedding
+    - mean_score
+    - medoid_embedding
+    - rrf
+    - majority_vote
+    - oracle_best_of_n
+  bootstrap_replicates: 2000
+
+tags:
+  stage: cross_family_screen
+  model_role: independent_contrastive_replication
+  primary_metric: ndcg@10

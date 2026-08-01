@@ -1,0 +1,11 @@
+name: facebook/contriever
+revision: null  # Pin a Hugging Face commit before final experiments.
+query_prefix: ""
+document_prefix: ""
+pooling: mean
+expected_dimension: 768
+batch_size: 32
+max_length: 512
+normalize: true
+dropout_scope: all
+dropout_probability: null

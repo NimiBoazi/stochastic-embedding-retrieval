@@ -4,11 +4,13 @@ import json
 import random
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
 from numpy.lib.format import open_memmap
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.sentence_transformer.modules import Pooling
 from torch import nn
 from tqdm import tqdm
 
@@ -53,22 +55,71 @@ def configure_dropout(
     for name, module in model.named_modules():
         if not isinstance(module, nn.Dropout):
             continue
-        is_attention = "attention" in name.lower() or "attn" in name.lower()
-        selected = (
-            scope == "all"
-            or (scope == "attention" and is_attention)
-            or (scope == "hidden" and not is_attention)
-        )
-        if selected:
+        if _dropout_selected(name, scope):
             if probability is not None:
                 if not 0 <= probability < 1:
                     raise ValueError("dropout_probability must be in [0, 1)")
                 module.p = probability
             module.train()
-            enabled += 1
+            enabled += int(module.p > 0)
     if enabled == 0:
-        raise RuntimeError(f"No dropout modules matched scope '{scope}'")
+        raise RuntimeError(
+            f"No positive-probability dropout modules matched scope '{scope}'"
+        )
     return enabled
+
+
+def dropout_probability_summary(model: nn.Module, scope: str) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Dropout) and _dropout_selected(name, scope):
+            probability = f"{module.p:.6g}"
+            summary[probability] = summary.get(probability, 0) + 1
+    return summary
+
+
+def _dropout_selected(name: str, scope: str) -> bool:
+    is_attention = "attention" in name.lower() or "attn" in name.lower()
+    return (
+        scope == "all"
+        or (scope == "attention" and is_attention)
+        or (scope == "hidden" and not is_attention)
+    )
+
+
+def configure_pooling(model: SentenceTransformer, mode: str) -> str:
+    valid_modes = {"model_default", "cls", "mean"}
+    if mode not in valid_modes:
+        raise ValueError(f"pooling must be one of {sorted(valid_modes)}")
+    pooling_modules = [
+        module for module in model.modules() if isinstance(module, Pooling)
+    ]
+    if len(pooling_modules) != 1:
+        raise RuntimeError(
+            f"Expected one SentenceTransformers Pooling module, found "
+            f"{len(pooling_modules)}"
+        )
+    pooling = pooling_modules[0]
+    if mode == "model_default":
+        current_mode = getattr(pooling, "pooling_mode", None)
+        if isinstance(current_mode, str):
+            return current_mode
+        if getattr(pooling, "pooling_mode_cls_token", False):
+            return "cls"
+        if getattr(pooling, "pooling_mode_mean_tokens", False):
+            return "mean"
+        return "other"
+
+    if hasattr(pooling, "pooling_mode"):
+        pooling.pooling_mode = mode
+    else:  # Compatibility with SentenceTransformers before the unified mode field.
+        pooling.pooling_mode_cls_token = mode == "cls"
+        pooling.pooling_mode_mean_tokens = mode == "mean"
+        pooling.pooling_mode_max_tokens = False
+        pooling.pooling_mode_mean_sqrt_len_tokens = False
+        pooling.pooling_mode_weightedmean_tokens = False
+        pooling.pooling_mode_lasttoken = False
+    return mode
 
 
 class SentenceEmbeddingEncoder:
@@ -81,10 +132,19 @@ class SentenceEmbeddingEncoder:
             device=self.device,
         )
         self.model.max_seq_length = config.max_length
+        self.pooling = configure_pooling(self.model, config.pooling)
         dimension = self.model.get_sentence_embedding_dimension()
         if dimension is None:
             raise RuntimeError("Could not determine sentence embedding dimension")
         self.dimension = int(dimension)
+        if (
+            config.expected_dimension is not None
+            and self.dimension != config.expected_dimension
+        ):
+            raise RuntimeError(
+                f"{config.name} produced dimension {self.dimension}; "
+                f"expected {config.expected_dimension}"
+            )
 
     def encode_to_file(
         self,
@@ -96,7 +156,7 @@ class SentenceEmbeddingEncoder:
         seed: int,
         stochastic: bool,
         description: str,
-    ) -> dict[str, float | int | bool]:
+    ) -> dict[str, Any]:
         set_reproducible_seed(seed)
         enabled_dropout_modules = configure_dropout(
             self.model,
@@ -136,6 +196,10 @@ class SentenceEmbeddingEncoder:
             "seed": seed,
             "stochastic": stochastic,
             "enabled_dropout_modules": enabled_dropout_modules,
+            "dropout_probabilities": dropout_probability_summary(
+                self.model, self.config.dropout_scope
+            ),
+            "pooling": self.pooling,
         }
 
     def _write_batch(
